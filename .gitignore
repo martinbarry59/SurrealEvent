@@ -1,0 +1,8 @@
+*
+!.gitignore
+!*.def
+!*.sh
+!*.py
+!requirements.txt
+!model_best*
+!*/
