@@ -3,6 +3,7 @@
 !*.def
 !*.sh
 !*.py
+!*.toml
 !requirements.txt
 !model_best*
 !*/
