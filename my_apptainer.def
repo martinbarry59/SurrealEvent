@@ -23,11 +23,10 @@ src/
 README.md
 %post -c /bin/bash
 
-# Create venv first
-python3 -m venv .venv
+python3 -m venv /opt/venv
 
-# Activate venv
-source .venv/bin/activate
+# Activate
+source /opt/venv/bin/activate
 
 # Now inside venv, install uv
 pip install uv
@@ -35,3 +34,8 @@ pip install uv
 # Now you can use uv safely
 uv build
 uv pip install -e .
+%environment
+export PATH=/opt/venv/bin:$PATH
+%runscript
+    echo "Container is running with Conda environment activated!"
+    exec /bin/bash
