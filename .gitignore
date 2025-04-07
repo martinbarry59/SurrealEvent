@@ -5,6 +5,7 @@
 !*.sh
 !*.py
 !*.toml
+!*.md
 !requirements.txt
 !model_best*
 !*/
