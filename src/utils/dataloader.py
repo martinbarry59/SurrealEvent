@@ -4,7 +4,6 @@ import h5py
 from torch.nn.utils.rnn import pad_sequence
 import os
 import glob
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")   
 class EventDepthDataset(Dataset):
     def __init__(self, h5_dir):
         super().__init__()
@@ -16,9 +15,9 @@ class EventDepthDataset(Dataset):
 
     def __getitem__(self, idx):
         with h5py.File(self.events_files[idx], 'r') as f:
-            events = torch.Tensor(f['vids'][:]).to(device)  # shape [N_events, 4]
+            events = torch.Tensor(f['vids'][:])  # shape [N_events, 4]
         with h5py.File(self.depth_files[idx], 'r') as f:
-            depth = torch.Tensor(f['vids'][:]).to(device)    # shape [T, H, W]
+            depth = torch.Tensor(f['vids'][:])  # shape [T, H, W]
 
         
 
@@ -31,7 +30,7 @@ def sampling_events(t_old, t_new, events):
     sample[:,1] = sample[:,1]/346
     sample[:,2] = sample[:,2]/260
     if sample.shape[0] == 0:
-        sample = torch.zeros(1, 4).to(device)
+        sample = torch.zeros(1, 4)
     return sample
 def collate_event_batches(batch):
     # batch = list of (event_chunks, depth) tuples
@@ -51,7 +50,7 @@ def collate_event_batches(batch):
         batch_events = [sampling_events(t_old, t_new, events) for events, _ in batch]
         
         padded = pad_sequence(batch_events, batch_first=True)  # [B, N_max, 4]
-        mask = torch.zeros(padded.shape[:2], dtype=torch.bool, device=device)  # [B, N_max]
+        mask = torch.zeros(padded.shape[:2], dtype=torch.bool)  # [B, N_max]
         for i, ev in enumerate(batch_events):
             mask[i, :ev.size(0)] = 1
         batched_event_chunks.append(padded)

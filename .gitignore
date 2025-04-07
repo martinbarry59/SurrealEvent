@@ -1,4 +1,5 @@
 *
+!dataset/
 !.gitignore
 !*.def
 !*.sh
