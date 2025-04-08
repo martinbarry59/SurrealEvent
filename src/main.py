@@ -44,7 +44,7 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True):
                     ## print t and flush
                     frame_tqdm.update(1)
                     frame_tqdm.set_postfix({"loss": loss.item()})
-                    if train and t % 5 == 0:
+                    if train and t % 20 == 0:
                         if loss != 0:
                             loss.backward()
                         optimizer.step()
@@ -61,22 +61,20 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True):
                     del events, depth
                     
                 t += 1
-                if t > 200:
-                    break
+
             frame_tqdm.close()
             epoch_loss += sum(loss_avg)/len(loss_avg)
             video_writer.release() if video_writer else None
-            print("bideo writer released")
             
             batch_step += 1
             
             print(f"Batch Step: {batch_step} / {len(loader)}, Loss: {sum(loss_avg)/len(loss_avg):.4f}")
             del events_videos, mask_videos, depths
-            break
+            
     return epoch_loss
 
 def main():
-    batch_size = 2
+    batch_size = 20
     train_dataset = EventDepthDataset(data_path+"/train/")
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_event_batches)
     test_dataset = EventDepthDataset(data_path+"/test/")
