@@ -68,7 +68,7 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True):
             
             batch_step += 1
             
-            print(f"Batch Step: {batch_step} / {len(loader)}, Loss: {sum(loss_avg)/len(loss_avg):.4f}")
+            print(f"Epoch: {epoch} Batch Step: {batch_step} / {len(loader)}, Loss: {sum(loss_avg)/len(loss_avg):.4f}")
             del events_videos, mask_videos, depths
             
     return epoch_loss
@@ -90,7 +90,7 @@ def main():
     model.to(device)
 
     criterion = torch.nn.SmoothL1Loss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
     
     min_loss = float('inf')
     for epoch in range(1000):
