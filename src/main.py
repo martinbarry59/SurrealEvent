@@ -18,18 +18,21 @@ def add_frame_to_video(video_writer, events, depth, output):
     merged = cv2.cvtColor(merged, cv2.COLOR_GRAY2BGR)  # make it (H, W, 3)
     video_writer.write(merged)  # Write the frame to video
 
-def seq_evaluation(model, loader, optimizer, epoch, criterion = None, train=True):
+def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, model_type = None):
     model.train() if train else model.eval()
     with torch.set_grad_enabled(train):
         batch_step = 0
-        tqdm_str = train *" Training:" + (1-train) * "Testing:"
-        batch_tqdm = tqdm.tqdm(total=len(loader), desc=f"Batch {tqdm_str}:" , position=0, leave=True)
+        tqdm_str = train *" training" + (1-train) * "testing"
+        batch_tqdm = tqdm.tqdm(total=len(loader), desc=f"Batch {tqdm_str}" , position=0, leave=True)
         for batch in loader:
             events_videos, depths = batch
             loss_avg = []
-            video_writer = cv2.VideoWriter(f'{videos_path}/test_evaluation_video_{batch_step}_EPOCH_{epoch}.mp4', fourcc, 30, (3*depths.shape[3], depths.shape[2])) #if not train else None
+            video_writer = cv2.VideoWriter(f'{videos_path}/{tqdm_str}_evaluation_video_{batch_step}_EPOCH_{epoch}.mp4', fourcc, 30, (3*depths.shape[3], depths.shape[2])) if (not train or batch_step %50==0 )else None
             t = 0
             loss = 0
+            batch_size = depths.shape[1]
+            if not model_type == "LSTM":
+                current_depth = torch.zeros(batch_size, 1,260, 346, device=device)
             for events, depth in zip(events_videos, depths):
                 events = events.to(device)
                 depth = depth.to(device)
@@ -38,14 +41,21 @@ def seq_evaluation(model, loader, optimizer, epoch, criterion = None, train=True
                 optimizer.zero_grad()
 
                 if t >= 10:
-                    outputs = model(events)
+                    if model_type == "LSTM":
+                        outputs = model(events)
+                    else:
+                        outputs = model(events, current_depth)
+                        current_depth = outputs
                     loss += criterion(outputs.squeeze(1), depth)
                     loss_avg.append(loss.detach().item())
-                    if train and t% 20 == 0:
+                    if train and t% 5 == 0:
                         ## change dim 1 with dim 2
                         loss.backward()
                         optimizer.step()
-                        model.convlstm.detach_hidden()
+                        if model_type == "LSTM":
+                            model.convlstm.detach_hidden()
+                        else:
+                            current_depth = current_depth.detach()
                         loss = 0
 
                     if video_writer:
@@ -55,78 +65,27 @@ def seq_evaluation(model, loader, optimizer, epoch, criterion = None, train=True
                 t += 1
             video_writer.release() if video_writer else None   
             batch_step += 1
-            model.convlstm.reset_hidden()            
+            if model_type == "LSTM":
+                model.convlstm.reset_hidden()            
             batch_tqdm.update(1)
             batch_tqdm.set_postfix({"loss": sum(loss_avg)/len(loss_avg)})
+        batch_tqdm.close()
     return sum(loss_avg)/len(loss_avg)
-def evaluation(model, loader, optimizer, epoch, criterion = None, train=True):
-    model.train() if train else model.eval()
-    with torch.set_grad_enabled(train):
-        batch_step = 0
-        epoch_loss = 0
-        for batch in loader:
-            events_videos, depths = batch
-            loss_avg = []
-            t = 0
-            frame_tqdm = tqdm.tqdm(total=len(events_videos), desc="Processing Videos", position=0, leave=True)
-            video_writer = cv2.VideoWriter(f'{videos_path}/test_evaluation_video_{batch_step}_EPOCH_{epoch}.mp4', fourcc, 30, (3*depths.shape[3], depths.shape[2])) if not train else None
-            loss = 0
-            for events, depth in zip(events_videos, depths):
-                    
-                
-                events = events.to(device)
-                depth = depth.to(device)
-                
-                
-                optimizer.zero_grad()
-                batch_size = events.shape[0]
-                current_depth = torch.zeros(batch_size, 1,260, 346, device=device)
-
-                if t >= 10:
-                    output = model(events, current_depth)
-                    loss += criterion(output.squeeze(1), depth)
-                    
-                    # break
-                    current_depth = output
-                    y = events[0,:,1] * 346
-                    x = events[0,:,2] * 260
-                    loss_avg.append(loss.detach().item())
-                    ## print t and flush
-                    frame_tqdm.update(1)
-                    frame_tqdm.set_postfix({"loss": loss.item()})
-                    if train and t % 5 == 0:
-                        if loss != 0:
-                            loss.backward()
-                        optimizer.step()
-                        loss = 0
-                    if video_writer:
-                        add_frame_to_video(video_writer, events, depth[0], output[0,0])
-                    del events, depth
-                    
-                t += 1
-                if t > 200:
-                    break
-            frame_tqdm.close()
-            epoch_loss += sum(loss_avg)/len(loss_avg)
-            video_writer.release() if video_writer else None
-            print("bideo writer released")
-            
-            batch_step += 1
-            
-            print(f"Batch Step: {batch_step} / {len(loader)}, Loss: {sum(loss_avg)/len(loss_avg):.4f}")
-            del events_videos, mask_videos, depths
-            break
-    return epoch_loss
 
 def main():
-    batch_size = 20
+    batch_size = 2
     train_dataset = EventDepthDataset(data_path+"/train/")
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_event_batches)
     test_dataset = EventDepthDataset(data_path+"/test/")
     test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_event_batches)
-    # width = 346
-    # height = 260
-    model = UNetMobileNetLSTM(in_channels = 2, out_channels = 1)
+    model_type="FF" #"FF"
+    if model_type == "LSTM":
+        model = UNetMobileNetLSTM(in_channels = 2, out_channels = 1)
+    elif model_type == "FF":
+        model = UNetMobileNet(in_channels = 3, out_channels = 1)
+    else:
+        raise ValueError("Unknown model type")
+    
     if checkpoint_path:
         try:
             model.load_state_dict(torch.load(checkpoint_path))
@@ -136,11 +95,11 @@ def main():
 
     criterion = torch.nn.SmoothL1Loss()
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-6)
-    
+
     min_loss = float('inf')
-    for epoch in range(1000):
-        train_loss = seq_evaluation(model, train_loader, optimizer, epoch, criterion)
-        test_loss = seq_evaluation(model, test_loader, optimizer, epoch, criterion= criterion, train=False)
+    for epoch in range(10):
+        train_loss = evaluation(model, train_loader, optimizer, epoch, criterion, model_type=model_type)
+        test_loss = evaluation(model, test_loader, optimizer, epoch, criterion= criterion, train=False, model_type=model_type)
         if test_loss < min_loss:
             min_loss = test_loss
             torch.save(model.state_dict(), f'{checkpoint_path}/model_epoch_{epoch}.pth')
