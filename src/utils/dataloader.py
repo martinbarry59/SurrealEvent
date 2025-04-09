@@ -24,19 +24,19 @@ class EventDepthDataset(Dataset):
         return events, depth
 
 def sampling_events(t_old, t_new, events):
+    
     sample =  events[(events[:, 0] >= t_old )* (events[:, 0] < t_new)][:,:-1]
-
     ## normalise x ,y 
     sample[:,1] = sample[:,1]/346
     sample[:,2] = sample[:,2]/260
     if sample.shape[0] == 0:
         sample = torch.zeros(1, 4)
     return sample
+
 def collate_event_batches(batch):
     # batch = list of (event_chunks, depth) tuples
-
     batched_event_chunks = []
-    batched_masks = []
+    # batched_masks = []
     depths = []
     for sample in batch:
         depths.append(sample[1] / 255 )  # [T, H, W]
@@ -50,17 +50,15 @@ def collate_event_batches(batch):
         batch_events = [sampling_events(t_old, t_new, events) for events, _ in batch]
         
         padded = pad_sequence(batch_events, batch_first=True)  # [B, N_max, 4]
-        mask = torch.zeros(padded.shape[:2], dtype=torch.bool)  # [B, N_max]
-        for i, ev in enumerate(batch_events):
-            mask[i, :ev.size(0)] = 1
+        # mask = torch.zeros(padded.shape[:2], dtype=torch.bool)  # [B, N_max]
+        # for i, ev in enumerate(batch_events):
+        #     mask[i, :ev.size(0)] = 1
         batched_event_chunks.append(padded)
-        batched_masks.append(mask)
-        
-
+        # batched_masks.append(mask)
         
 
     
-    return batched_event_chunks,batched_masks, depths
+    return batched_event_chunks, depths
 
 # Example usage:
 # dataset = EventDepthDataset('/path/to/h5/data')

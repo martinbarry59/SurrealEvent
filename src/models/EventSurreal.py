@@ -92,3 +92,4 @@ class EventToDepthModel(nn.Module):
         h = torch.zeros(batch_size, self.hidden_dim, self.height, self.width, device=device)
         c = torch.zeros(batch_size, self.hidden_dim, self.height, self.width, device=device)
         return h, c
+        
