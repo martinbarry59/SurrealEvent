@@ -1,6 +1,6 @@
-from models.MobileNetSurrealLSTM import UNetMobileNetLSTM
-from models.MobileNetSurreal import UNetMobileNet
+from models.MobileNetSurreal import UNetMobileNetSurreal
 from utils.dataloader import EventDepthDataset, collate_event_batches
+from utils.functions import add_frame_to_video
 import torch
 from config import data_path, videos_path, checkpoint_path
 import cv2
@@ -8,17 +8,9 @@ import tqdm
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # or use 'XVID' for .avi
 print(device)
-def add_frame_to_video(video_writer, events, depth, output):
-    y = events[0,:,1] * 346
-    x = events[0,:,2] * 260
-    img = torch.zeros(260, 346)
-    img[x.long(), y.long()] = 1
-    merged = torch.cat([output,img, depth], dim=1).detach().numpy()
-    merged = (merged * 255 ).astype('uint8')
-    merged = cv2.cvtColor(merged, cv2.COLOR_GRAY2BGR)  # make it (H, W, 3)
-    video_writer.write(merged)  # Write the frame to video
 
-def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, model_type = None):
+
+def evaluation(model, loader, optimizer, epoch, criterion = None, train=True):
     model.train() if train else model.eval()
     with torch.set_grad_enabled(train):
         batch_step = 0
@@ -27,12 +19,10 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, mo
         for batch in loader:
             events_videos, depths = batch
             loss_avg = []
-            video_writer = cv2.VideoWriter(f'{videos_path}/{tqdm_str}_evaluation_video_{batch_step}_EPOCH_{epoch}.mp4', fourcc, 30, (3*depths.shape[3], depths.shape[2])) if (not train or batch_step %50==0 )else None
+            video_writer = cv2.VideoWriter(f'{videos_path}/{tqdm_str}_EPOCH_{epoch}_video_{batch_step}_{model.model_type}_{model.method}.mp4', fourcc, 30, (3*depths.shape[3], depths.shape[2])) if (not train or batch_step %1==0 )else None
             t = 0
             loss = 0
-            batch_size = depths.shape[1]
-            if not model_type == "LSTM":
-                current_depth = torch.zeros(batch_size, 1,260, 346, device=device)
+            
             for events, depth in zip(events_videos, depths):
                 events = events.to(device)
                 depth = depth.to(device)
@@ -41,21 +31,16 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, mo
                 optimizer.zero_grad()
 
                 if t >= 10:
-                    if model_type == "LSTM":
-                        outputs = model(events)
-                    else:
-                        outputs = model(events, current_depth)
-                        current_depth = outputs
+                    outputs, _ = model(events)
+
+
                     loss += criterion(outputs.squeeze(1), depth)
                     loss_avg.append(loss.detach().item())
                     if train and t% 5 == 0:
                         ## change dim 1 with dim 2
                         loss.backward()
                         optimizer.step()
-                        if model_type == "LSTM":
-                            model.convlstm.detach_hidden()
-                        else:
-                            current_depth = current_depth.detach()
+                        model.detach_states()
                         loss = 0
 
                     if video_writer:
@@ -65,8 +50,7 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, mo
                 t += 1
             video_writer.release() if video_writer else None   
             batch_step += 1
-            if model_type == "LSTM":
-                model.convlstm.reset_hidden()            
+            model.reset_states()            
             batch_tqdm.update(1)
             batch_tqdm.set_postfix({"loss": sum(loss_avg)/len(loss_avg)})
         batch_tqdm.close()
@@ -78,13 +62,11 @@ def main():
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_event_batches)
     test_dataset = EventDepthDataset(data_path+"/test/")
     test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_event_batches)
-    model_type="FF" #"FF"
-    if model_type == "LSTM":
-        model = UNetMobileNetLSTM(in_channels = 2, out_channels = 1)
-    elif model_type == "FF":
-        model = UNetMobileNet(in_channels = 3, out_channels = 1)
-    else:
-        raise ValueError("Unknown model type")
+
+    # Load the model UNetMobileNetSurreal
+    use_lstm = False
+    method = "add"  
+    model = UNetMobileNetSurreal(in_channels = 2 + 1 * (not use_lstm), out_channels = 1, use_lstm = use_lstm, method = method) ## if no LSTM use there we give previous output as input
     
     if checkpoint_path:
         try:
@@ -94,15 +76,15 @@ def main():
     model.to(device)
 
     criterion = torch.nn.SmoothL1Loss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-6)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-5)
 
     min_loss = float('inf')
     for epoch in range(10):
-        train_loss = evaluation(model, train_loader, optimizer, epoch, criterion, model_type=model_type)
-        test_loss = evaluation(model, test_loader, optimizer, epoch, criterion= criterion, train=False, model_type=model_type)
+        train_loss = evaluation(model, train_loader, optimizer, epoch, criterion)
+        test_loss = evaluation(model, test_loader, optimizer, epoch, criterion= criterion, train=False)
         if test_loss < min_loss:
             min_loss = test_loss
-            torch.save(model.state_dict(), f'{checkpoint_path}/model_epoch_{epoch}.pth')
+            torch.save(model.state_dict(), f'{checkpoint_path}/model_epoch_{epoch}_{model.model_type}_{model.method}.pth')
         print(f"Epoch {epoch}, Train Loss: {train_loss:.4f}, Test Loss: {test_loss:.4f}")
     
 
