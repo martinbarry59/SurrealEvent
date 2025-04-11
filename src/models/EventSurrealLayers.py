@@ -78,8 +78,8 @@ class ConvLSTM(nn.Module):
 class Encoder(nn.Module):
     def __init__(self, in_channels, out_channels =None):
         super(Encoder, self).__init__()
-        self.backbone = mobilenet_v2(weights = MobileNet_V2_Weights.IMAGENET1K_V1).features
-
+        # self.backbone = mobilenet_v2(weights = MobileNet_V2_Weights.IMAGENET1K_V1).features
+        self.backbone = mobilenet_v2(weights = None).features
         # Modify first conv layer to accept custom input channels
         self.backbone[0][0] = nn.Conv2d(in_channels, 32, kernel_size=3, stride=2, padding=1, bias=False)
 

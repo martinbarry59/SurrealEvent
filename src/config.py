@@ -8,9 +8,7 @@ data_path = os.path.join(parent_dir, 'dataset/')
 results_path = os.path.join(parent_dir, 'results/')
 if not os.path.exists(results_path):
     os.makedirs(results_path)
-videos_path = os.path.join(results_path, 'videos/')
-if not os.path.exists(videos_path):
-    os.makedirs(videos_path)
+
 
 
 checkpoint_path = os.path.join(parent_dir, 'checkpoints/')
