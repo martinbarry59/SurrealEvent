@@ -19,7 +19,7 @@ class UNetMobileNetSurreal(nn.Module):
                 input_dim=encoder_channels[4],
                 hidden_dims=[encoder_channels[4], encoder_channels[4]],
                 kernel_size=3,
-                num_layers=1
+                num_layers=2
             )
         else: 
             self.estimated_depth = None

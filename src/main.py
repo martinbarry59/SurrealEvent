@@ -23,7 +23,7 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
             writer_path = f'{save_path}/{tqdm_str}_EPOCH_{epoch}_video_{batch_step}.mp4' if save_path else None
             if save_path and not os.path.exists(writer_path):
                 os.makedirs(os.path.dirname(writer_path), exist_ok=True)
-            video_writer = cv2.VideoWriter(writer_path) if (not train or batch_step % 20==0 and save_path) else None
+            video_writer = cv2.VideoWriter(writer_path, fourcc, 30, (3*depths.shape[3], depths.shape[2])) if (not train or batch_step % 20==0 and save_path) else None
             loss = 0
             
             for t, (events, depth) in enumerate(zip(events_videos, depths)):
@@ -51,11 +51,11 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
                     
                     del  outputs
             with open(error_file, "a") as f:
-                f.write(f"Epoch {epoch}, Batch {batch_step}, Loss: {sum(loss_avg)/len(loss_avg)}\n")
+                f.write(f"Epoch {epoch}, Batch {batch_step}, Loss: {sum(loss_avg)}\n")
             video_writer.release() if video_writer else None   
             model.reset_states()            
             batch_tqdm.update(1)
-            batch_tqdm.set_postfix({"loss": sum(loss_avg)/len(loss_avg)})
+            batch_tqdm.set_postfix({"loss": sum(loss_avg)})
         batch_tqdm.close()
     return sum(loss_avg)/len(loss_avg)
 
