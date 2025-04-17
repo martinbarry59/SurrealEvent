@@ -11,6 +11,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # or use 'XVID' for .avi
 from torch.amp import autocast
 import torch.nn.functional as F
+from torchvision import transforms
 print(device)
 def edge_aware_loss(pred, target):
     pred_dx = pred[ :, :, 1:] - pred[ :, :, :-1]
@@ -60,6 +61,8 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
                     if train and t % block_update == 0:
                         ## change dim 1 with dim 2
                         scaler.scale(loss).backward()
+                        scaler.unscale_(optimizer)
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
                         scaler.step(optimizer)
                         scaler.update()
                         model.detach_states()
@@ -85,11 +88,19 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
     return sum(loss_avg)/len(loss_avg)
 
 def main():
-    batch_size = 10
+    batch_size = 15
+
+    ## transform for data augmentation
+    transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.5], std=[0.5])
+    ])
+
     train_dataset = EventDepthDataset(data_path+"/train/")
-    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=False, collate_fn=vectorized_collate)
+    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=vectorized_collate)
     test_dataset = EventDepthDataset(data_path+"/test/")
     test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=False, collate_fn=vectorized_collate)
+
 
     # Load the model UNetMobileNetSurreal
     use_lstm = False
@@ -109,7 +120,7 @@ def main():
     model.to(device)
 
     criterion = torch.nn.SmoothL1Loss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)
+    optimizer = torch.optim.Adam(model.parameters(), lr=5e-4, weight_decay=1e-5)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10, eta_min=1e-6)  # 10 = total number of epochs
 
 

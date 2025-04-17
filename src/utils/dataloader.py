@@ -4,6 +4,31 @@ import h5py
 from torch.nn.utils.rnn import pad_sequence
 import os
 import glob
+from torchvision.transforms import v2 
+import torch.nn.functional as F
+import random
+class RandomChoice(torch.nn.Module):
+    def __init__(self, transforms):
+       super().__init__()
+       self.transforms = transforms
+
+    def __call__(self, imgs):
+        t = random.choice(self.transforms)
+        return [t(img) for img in imgs]
+def event_dropout(events, p=0.1):
+    mask = torch.rand_like(events) > p
+    return events * mask
+def apply_augmentations(events, depth):
+    ## transfor grayscale images
+    transforms = RandomChoice([
+        v2.RandomHorizontalFlip(),
+        v2.RandomVerticalFlip(),
+        v2.RandomRotation(180),
+    ])
+    print(events.shape, depth.shape)
+    events, depth = transforms([events, depth.unsqueeze(2)])
+    depth = depth.squeeze(2)
+    return events, depth
 class EventDepthDataset(Dataset):
     def __init__(self, h5_dir):
         super().__init__()
@@ -18,9 +43,6 @@ class EventDepthDataset(Dataset):
             events = torch.Tensor(f['vids'][:])  # shape [N_events, 4]
         with h5py.File(self.depth_files[idx], 'r') as f:
             depth = torch.Tensor(f['vids'][:])  # shape [T, H, W]
-
-        
-
         return events, depth
 
 def sampling_events(t_old, t_new, events):
@@ -65,6 +87,7 @@ def vectorized_collate(batch):
     step = 1/(30*12)
     event_frames = torch.zeros(len(batch), batch[0][1].shape[0], 2 , 260, 346)
     for batch_n,(events, depth) in enumerate(batch):
+        events = event_dropout(events, p=0.05)
         depths.append(depth / 255 )  # [T, H, W]
         times = events[:, 0]
         x = events[:, 1].long()
@@ -75,6 +98,7 @@ def vectorized_collate(batch):
         event_frames[batch_n, frame_n, polarities , y, x] = 1
     depths = torch.stack(depths).permute((1,0,2,3))  # [B, T, H, W]
     event_frames = event_frames.permute(1,0, 2, 3, 4)
+    event_frames, depths = apply_augmentations(event_frames, depths)
     return event_frames, depths
 # Example usage:
 # dataset = EventDepthDataset('/path/to/h5/data')
