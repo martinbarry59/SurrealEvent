@@ -5,16 +5,15 @@ from torch.nn.utils.rnn import pad_sequence
 import os
 import glob
 from torchvision.transforms import v2 
-import torch.nn.functional as F
 import random
 class RandomChoice(torch.nn.Module):
     def __init__(self, transforms):
        super().__init__()
        self.transforms = transforms
 
-    def __call__(self, imgs):
+    def __call__(self, img):
         t = random.choice(self.transforms)
-        return [t(img) for img in imgs]
+        return t(img) 
 def event_dropout(events, p=0.1):
     mask = torch.rand_like(events) > p
     return events * mask
@@ -25,9 +24,8 @@ def apply_augmentations(events, depth):
         v2.RandomVerticalFlip(),
         v2.RandomRotation(180),
     ])
-    print(events.shape, depth.shape)
-    events, depth = transforms([events, depth.unsqueeze(2)])
-    depth = depth.squeeze(2)
+    processed = transforms(torch.cat([events, depth.unsqueeze(2)], dim=2))
+    events, depth = processed[:, :, :events.shape[2]], processed[:, :, events.shape[2]:].squeeze(2)
     return events, depth
 class EventDepthDataset(Dataset):
     def __init__(self, h5_dir):
@@ -88,7 +86,7 @@ def vectorized_collate(batch):
     event_frames = torch.zeros(len(batch), batch[0][1].shape[0], 2 , 260, 346)
     for batch_n,(events, depth) in enumerate(batch):
         events = event_dropout(events, p=0.05)
-        depths.append(depth / 255 )  # [T, H, W]
+        depths.append(depth / 255)  # [T, H, W]
         times = events[:, 0]
         x = events[:, 1].long()
         y = events[:, 2].long()

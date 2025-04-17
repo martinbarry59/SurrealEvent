@@ -11,7 +11,6 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # or use 'XVID' for .avi
 from torch.amp import autocast
 import torch.nn.functional as F
-from torchvision import transforms
 print(device)
 def edge_aware_loss(pred, target):
     pred_dx = pred[ :, :, 1:] - pred[ :, :, :-1]
@@ -90,11 +89,6 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
 def main():
     batch_size = 15
 
-    ## transform for data augmentation
-    transform = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.5], std=[0.5])
-    ])
 
     train_dataset = EventDepthDataset(data_path+"/train/")
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=vectorized_collate)
