@@ -13,10 +13,10 @@ from torch.amp import autocast
 import torch.nn.functional as F
 print(device)
 def edge_aware_loss(pred, target):
-    pred_dx = pred[:, :, :, 1:] - pred[:, :, :, :-1]
-    target_dx = target[:, :, :, 1:] - target[:, :, :, :-1]
-    pred_dy = pred[:, :, 1:, :] - pred[:, :, :-1, :]
-    target_dy = target[:, :, 1:, :] - target[:, :, :-1, :]
+    pred_dx = pred[ :, :, 1:] - pred[ :, :, :-1]
+    target_dx = target[:, :, 1:] - target[:, :, :-1]
+    pred_dy = pred[ :, 1:, :] - pred[ :, :-1, :]
+    target_dy = target[ :, 1:, :] - target[ :, :-1, :]
     return F.l1_loss(pred_dx, target_dx) + F.l1_loss(pred_dy, target_dy)
 
 def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, save_path=None):
@@ -32,7 +32,7 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
             writer_path = f'{save_path}/{tqdm_str}_EPOCH_{epoch}_video_{batch_step}.mp4' if save_path else None
             if save_path and not os.path.exists(writer_path):
                 os.makedirs(os.path.dirname(writer_path), exist_ok=True)
-            video_writer = cv2.VideoWriter(writer_path, fourcc, 30, (3*depths.shape[3], depths.shape[2])) if (not train or batch_step % 20==0 and save_path) else None
+            video_writer = cv2.VideoWriter(writer_path, fourcc, 30, (5*depths.shape[3], depths.shape[2])) if (not train or batch_step % 20==0 and save_path) else None
             loss = 0
             block_update = 60
             N_update = 1
@@ -45,7 +45,7 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
                 with autocast(device_type="cuda"):
                     if t < t_start:
                         with torch.no_grad():
-                            outputs, _ = model(events)
+                            outputs, _, kerneled = model(events)
                     else:
                         optimizer.zero_grad()
                         outputs, _, kerneled = model(events)
@@ -54,8 +54,9 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
                 loss_avg.append(instant_loss.item())
                 if t >= t_start:
                     loss += instant_loss
-                    loss += F.smooth_l1_loss((outputs, previous_output))
-                    loss += edge_aware_loss(outputs, depth)
+                    loss += F.smooth_l1_loss(outputs, previous_output)
+                    loss += edge_aware_loss(outputs.squeeze(1), depth)
+                    
                     if train and t % block_update == 0:
                         ## change dim 1 with dim 2
                         scaler.scale(loss).backward()
@@ -65,7 +66,11 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
                         loss = 0
 
                 if video_writer:
-                    add_frame_to_video(video_writer, events.cpu(), depth[0].cpu(), outputs[0,0].squeeze(0).cpu())
+                    kerneled = kerneled-kerneled.min() 
+                    kerneled = kerneled/(kerneled.max()+1e-6)
+
+                    images_to_write = [events, kerneled[0,0], kerneled[0,1], depth[0], outputs[0,0].squeeze(0)]
+                    add_frame_to_video(video_writer, images_to_write)
                 previous_output = outputs.detach().clone()
                 del  outputs
                 if t == t_end:
@@ -87,7 +92,7 @@ def main():
     test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=False, collate_fn=vectorized_collate)
 
     # Load the model UNetMobileNetSurreal
-    use_lstm = True
+    use_lstm = False
     method = "add"
     path_str = use_lstm *" LSTM" + (1-use_lstm) * "FF"
     save_path = f'{results_path}/{path_str}_{method}'

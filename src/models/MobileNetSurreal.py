@@ -2,14 +2,16 @@ import torch
 import torch.nn as nn
 from models.EventSurrealLayers import Encoder, Decoder, ConvLSTM
 from utils.functions import eventstohistogram
+import numpy as np
 def make_kernel(kernel_size=7):
     center = kernel_size // 2
     first_odds = torch.arange(1, 2 * (center + 1), 2)
     kernel = torch.zeros((kernel_size, kernel_size))
     for i in range(kernel_size):
         for j in range(kernel_size):
-            d = torch.maximum(torch.abs(i - center), torch.abs(j - center))
+            d = np.maximum(np.abs(i - center), np.abs(j - center))
             kernel[i, j] = 1 / first_odds[d] ** 2
+    
     return kernel
 def generate_conv(kernel_size=7, seq_len=8):
     kernel = make_kernel(kernel_size)
@@ -27,11 +29,8 @@ def generate_conv(kernel_size=7, seq_len=8):
     return conv
 def kernel_transform(data, conv):
     convoluted = conv(data)
-
-    convoluted = (convoluted - torch.mean(convoluted, dim=(1, 2), keepdim=True)) / (
-        torch.std(convoluted, dim=(1, 2), keepdim=True) + 1e-10
-    )
-
+    ## normalise the convoluted data
+    convoluted = convoluted - convoluted.min() / 0.1
     return convoluted
 class UNetMobileNetSurreal(nn.Module):
     def __init__(self, in_channels, out_channels, use_lstm = False, method = "concatenate"):
@@ -40,7 +39,7 @@ class UNetMobileNetSurreal(nn.Module):
         
         # Load pretrained MobileNetV2 as encoder backbone
         self.model_type = "FF" if use_lstm is False else "LSTM"
-        self.gausian_conv = generate_conv(kernel_size=7, seq_len=self.num_seq)
+        self.gausian_conv = generate_conv(kernel_size=7, seq_len=2)
         self.method = method
         self.encoder = Encoder(in_channels)
         encoder_channels = [32, 24, 32, 64, 1280]
@@ -75,9 +74,10 @@ class UNetMobileNetSurreal(nn.Module):
     def forward(self, events):
         with torch.no_grad():
             if events.shape[-1] == 4:
-                x = eventstohistogram(events)
-            x = events
+                events = eventstohistogram(events)
+            
             kernelized = kernel_transform(events, self.gausian_conv)
+            x = kernelized
         if self.model_type == "FF":
             if self.estimated_depth is None:
                 self.estimated_depth = torch.zeros_like(x[:, 0:1, :, :], device=x.device)

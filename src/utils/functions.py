@@ -13,18 +13,6 @@ def eventstohistogram(events, height=260, width=346):
 
         return hist
 
-def add_frame_to_video(video_writer, events, depth, output):
-    if events.shape[-1] == 4:
-        y = events[0,:,1] * 346
-        x = events[0,:,2] * 260
-        img = torch.zeros(260, 346)
-        img[x.long(), y.long()] = 1
-    else:
-        img = 1 * (torch.sum(events[0], dim=0) > 0)
-    merged = torch.cat([output,img, depth], dim=1).detach().numpy()
-    merged = (merged * 255 ).astype('uint8')
-    merged = cv2.cvtColor(merged, cv2.COLOR_GRAY2BGR)  # make it (H, W, 3)
-    video_writer.write(merged)  # Write the frame to video
 def add_frame_to_video(video_writer, images):
     if images[0].shape[-1] == 4:
         y = images[0][0,:,1] * 346
@@ -37,7 +25,7 @@ def add_frame_to_video(video_writer, images):
     merged = []
     for img in images:
         merged.append(img)
-    merged = torch.cat(merged, dim=1).detach().numpy()
+    merged = torch.cat(merged, dim=1).detach().cpu().numpy()
     merged = (merged * 255 ).astype('uint8')
     merged = cv2.cvtColor(merged, cv2.COLOR_GRAY2BGR)  # make it (H, W, 3)
     video_writer.write(merged)  # Write the frame to video
