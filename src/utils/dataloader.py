@@ -59,7 +59,23 @@ def collate_event_batches(batch):
 
     
     return batched_event_chunks, depths
-
+def vectorized_collate(batch):
+    
+    depths = []
+    step = 1/(30*12)
+    event_frames = torch.zeros(len(batch), batch[0][1].shape[0], 2 , 260, 346)
+    for batch_n,(events, depth) in enumerate(batch):
+        depths.append(depth / 255 )  # [T, H, W]
+        times = events[:, 0]
+        x = events[:, 1].long()
+        y = events[:, 2].long()
+        
+        polarities = ((events[:, 3] +1)/2).long()
+        frame_n = (torch.floor(times / step)-1).long()
+        event_frames[batch_n, frame_n, polarities , y, x] = 1
+    depths = torch.stack(depths).permute((1,0,2,3))  # [B, T, H, W]
+    event_frames = event_frames.permute(1,0, 2, 3, 4)
+    return event_frames, depths
 # Example usage:
 # dataset = EventDepthDataset('/path/to/h5/data')
 # loader = DataLoader(dataset, batch_size=4, shuffle=True, collate_fn=collate_event_batches)
