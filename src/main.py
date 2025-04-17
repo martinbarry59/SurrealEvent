@@ -1,5 +1,5 @@
 from models.MobileNetSurreal import UNetMobileNetSurreal
-from utils.dataloader import EventDepthDataset, collate_event_batches, vectorized_collate
+from utils.dataloader import EventDepthDataset, vectorized_collate
 from utils.functions import add_frame_to_video
 import torch
 from config import data_path, results_path, checkpoint_path
@@ -11,8 +11,10 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # or use 'XVID' for .avi
 from torch.amp import autocast
 import torch.nn.functional as F
+import shutil
 print(device)
 def edge_aware_loss(pred, target):
+    
     pred_dx = pred[ :, :, 1:] - pred[ :, :, :-1]
     target_dx = target[:, :, 1:] - target[:, :, :-1]
     pred_dy = pred[ :, 1:, :] - pred[ :, :-1, :]
@@ -34,7 +36,7 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
                 os.makedirs(os.path.dirname(writer_path), exist_ok=True)
             video_writer = cv2.VideoWriter(writer_path, fourcc, 30, (5*depths.shape[3], depths.shape[2])) if (not train or batch_step % 20==0 and save_path) else None
             loss = 0
-            block_update = 60
+            block_update = 3
             N_update = 1
             t_start = random.randint(10, 1188 - N_update * block_update)
             t_end = t_start + N_update * block_update
@@ -87,7 +89,7 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
     return sum(loss_avg)/len(loss_avg)
 
 def main():
-    batch_size = 15
+    batch_size = 2
 
 
     train_dataset = EventDepthDataset(data_path+"/train/")
@@ -101,8 +103,10 @@ def main():
     method = "add"
     path_str = use_lstm *" LSTM" + (1-use_lstm) * "FF"
     save_path = f'{results_path}/{path_str}_{method}'
-    if not os.path.exists(save_path):
-        os.makedirs(save_path)
+    if os.path.exists(save_path):
+        
+        shutil.rmtree(save_path)
+    os.makedirs(save_path)
     model = UNetMobileNetSurreal(in_channels = 2 + 1 * (not use_lstm), out_channels = 1, use_lstm = use_lstm, method = method) ## if no LSTM use there we give previous output as input
     
     if checkpoint_path:

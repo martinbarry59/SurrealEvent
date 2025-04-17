@@ -20,11 +20,20 @@ def event_dropout(events, p=0.1):
 def apply_augmentations(events, depth):
     ## transfor grayscale images
     transforms = RandomChoice([
-        v2.RandomHorizontalFlip(),
-        v2.RandomVerticalFlip(),
+        # v2.RandomHorizontalFlip(),
+        # v2.RandomVerticalFlip(),
         v2.RandomRotation(180),
     ])
-    processed = transforms(torch.cat([events, depth.unsqueeze(2)], dim=2))
+    to_process = torch.cat([events, depth.unsqueeze(2)], dim=2)
+    ## border to 0 
+    border = torch.ones_like(to_process)
+    edges = 1
+    border[:, :,:, 0:edges] = 0
+    border[:, :, :, -edges:] = 0 
+    border[:, :,:, :,0:edges] = 0
+    border[:, :, :,:, -edges:] = 0
+    to_process *= border
+    processed = transforms(to_process)
     events, depth = processed[:, :, :events.shape[2]], processed[:, :, events.shape[2]:].squeeze(2)
     return events, depth
 class EventDepthDataset(Dataset):
@@ -53,32 +62,32 @@ def sampling_events(t_old, t_new, events):
         sample = torch.zeros(1, 4)
     return sample
 
-def collate_event_batches(batch):
-    # batch = list of (event_chunks, depth) tuples
-    batched_event_chunks = []
-    # batched_masks = []
-    depths = []
-    for sample in batch:
-        depths.append(sample[1] / 255 )  # [T, H, W]
+# def collate_event_batches(batch):
+#     # batch = list of (event_chunks, depth) tuples
+#     batched_event_chunks = []
+#     # batched_masks = []
+#     depths = []
+#     for sample in batch:
+#         depths.append(sample[1] / 255 )  # [T, H, W]
 
-    depths = torch.stack(depths).permute((1,0,2,3))  # [B, T, H, W]
-    t_new = 0
-    for frame_step in range(depths.shape[0]):
-        t_old = t_new
-        t_new = t_old + 1/(30*12)
-         # list of [N_i, 4]
-        batch_events = [sampling_events(t_old, t_new, events) for events, _ in batch]
+#     depths = torch.stack(depths).permute((1,0,2,3))  # [B, T, H, W]
+#     t_new = 0
+#     for frame_step in range(depths.shape[0]):
+#         t_old = t_new
+#         t_new = t_old + 1/(30*12)
+#          # list of [N_i, 4]
+#         batch_events = [sampling_events(t_old, t_new, events) for events, _ in batch]
         
-        padded = pad_sequence(batch_events, batch_first=True)  # [B, N_max, 4]
-        # mask = torch.zeros(padded.shape[:2], dtype=torch.bool)  # [B, N_max]
-        # for i, ev in enumerate(batch_events):
-        #     mask[i, :ev.size(0)] = 1
-        batched_event_chunks.append(padded)
-        # batched_masks.append(mask)
+#         padded = pad_sequence(batch_events, batch_first=True)  # [B, N_max, 4]
+#         # mask = torch.zeros(padded.shape[:2], dtype=torch.bool)  # [B, N_max]
+#         # for i, ev in enumerate(batch_events):
+#         #     mask[i, :ev.size(0)] = 1
+#         batched_event_chunks.append(padded)
+#         # batched_masks.append(mask)
         
 
     
-    return batched_event_chunks, depths
+    #  return batched_event_chunks, depths
 def vectorized_collate(batch):
     
     depths = []
@@ -98,6 +107,3 @@ def vectorized_collate(batch):
     event_frames = event_frames.permute(1,0, 2, 3, 4)
     event_frames, depths = apply_augmentations(event_frames, depths)
     return event_frames, depths
-# Example usage:
-# dataset = EventDepthDataset('/path/to/h5/data')
-# loader = DataLoader(dataset, batch_size=4, shuffle=True, collate_fn=collate_event_batches)
