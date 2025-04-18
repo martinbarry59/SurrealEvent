@@ -67,6 +67,7 @@ class UNetMobileNetSurreal(nn.Module):
             self.estimated_depth = None
     def detach_states(self):
         if self.model_type == "LSTM":
+            print("detaching convlstm")
             self.convlstm.detach_hidden()
         else:
             self.estimated_depth = self.estimated_depth.detach()

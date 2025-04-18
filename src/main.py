@@ -25,7 +25,7 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
     model.train() if train else model.eval()
     scaler = torch.amp.GradScaler(device=device)
     with torch.set_grad_enabled(train):
-        tqdm_str = train *" training" + (1-train) * "testing"
+        tqdm_str = train *"training" + (1-train) * "testing"
         batch_tqdm = tqdm.tqdm(total=len(loader), desc=f"Batch {tqdm_str}" , position=0, leave=True)
         error_file = f'{save_path}/{tqdm_str}_error.txt' if save_path else None
         for batch_step, batch in enumerate(loader):
@@ -59,7 +59,7 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
                     loss += F.smooth_l1_loss(outputs, previous_output)
                     loss += edge_aware_loss(outputs.squeeze(1), depth)
                     
-                    if train and t % block_update == 0:
+                    if train and t == t_end:
                         ## change dim 1 with dim 2
                         scaler.scale(loss).backward()
                         scaler.unscale_(optimizer)
@@ -78,6 +78,7 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
                 previous_output = outputs.detach().clone()
                 del  outputs, depth, events, kerneled
                 if t == t_end:
+                    print("end of batch training")
                     break
             with open(error_file, "a") as f:
                 f.write(f"Epoch {epoch}, Batch {batch_step} / {len(loader)}, Loss: {sum(loss_avg)/len(loss_avg)}, LR: {optimizer.param_groups[0]['lr']}\n")
@@ -89,7 +90,7 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
     return sum(loss_avg)/len(loss_avg)
 
 def main():
-    batch_size = 15
+    batch_size = 10
 
 
     train_dataset = EventDepthDataset(data_path+"/train/")
@@ -99,7 +100,7 @@ def main():
 
 
     # Load the model UNetMobileNetSurreal
-    use_lstm = False
+    use_lstm = True
     method = "concatenate" ## add or concatenate
     path_str = use_lstm *"LSTM" + (1-use_lstm) * "FF"
     save_path = f'{results_path}/{path_str}_{method}'
