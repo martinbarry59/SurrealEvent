@@ -2,7 +2,7 @@ from config import results_path
 import os
 import matplotlib.pyplot as plt
 
-files = ["training_error.txt"]
+files = ["training_error.txt", "testing_error.txt"]
 def find_loss(text):
     text = text.split(",")
     for subtext in text:
