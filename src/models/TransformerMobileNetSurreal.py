@@ -33,43 +33,25 @@ def kernel_transform(data, conv):
     convoluted = convoluted - convoluted.min() / 0.1
     return convoluted
 class UNetMobileNetSurreal(nn.Module):
-    def __init__(self, in_channels, out_channels, use_lstm = False, method = "concatenate"):
+    def __init__(self, in_channels, out_channels, method = "concatenate"):
         super(UNetMobileNetSurreal, self).__init__()
         assert method in ["concatenate", "add"], "Method must be either 'concatenate' or 'add'"
         
         # Load pretrained MobileNetV2 as encoder backbone
-        self.model_type = "FF" if use_lstm is False else "LSTM"
         self.gausian_conv = generate_conv(kernel_size=7, seq_len=2)
         self.method = method
         self.encoder = Encoder(in_channels)
         encoder_channels = [32, 24, 32, 64, 1280]
         
-        if self.model_type == "LSTM":
-            self.convlstm = ConvLSTM(
-                input_dim=encoder_channels[4],
-                hidden_dims=[encoder_channels[4], encoder_channels[4]],
-                kernel_size=3,
-                num_layers=2
-            )
-        else: 
-            self.estimated_depth = None
+        self.temporal_attention = nn.MultiheadAttention(embed_dim=encoder_channels[4], num_heads=4, batch_first=True)
+
         self.decoder = Decoder(encoder_channels, method)
 
-        self.final_conv = nn.Sequential(
-            nn.Conv2d(encoder_channels[0] + 1 * (not use_lstm), 32, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(32, out_channels, kernel_size=1)
-        )
+        
     def reset_states(self):
-        if self.model_type == "LSTM":
-            self.convlstm.reset_hidden()
-        else:
-            self.estimated_depth = None
+        self.history = []
     def detach_states(self):
-        if self.model_type == "LSTM":
-            self.convlstm.detach_hidden()
-        else:
-            self.estimated_depth = self.estimated_depth.detach()
+        self.history = [e.detach() for e in self.history]
 
     def forward(self, events):
         with torch.no_grad():
@@ -85,10 +67,17 @@ class UNetMobileNetSurreal(nn.Module):
 
         embedding, feats = self.encoder(x)
 
-        if self.model_type == "LSTM":
-            x = self.convlstm(embedding)
+        if len(self.history) < 10:
+            self.history.append(embedding)
         else:
-            x = embedding
+            self.history.pop(0)
+            self.history.append(embedding)
+        history = torch.stack(self.history, dim=1)
+        history = history.permute(0, 2, 1, 3, 4).reshape(history.shape[0], history.shape[1], -1)
+        history = history.permute(0, 2, 1)
+        x = self.temporal_attention(history, history, history)[0]
+        x = x.permute(0, 2, 1).reshape(x.shape[0], x.shape[1], history.shape[2], history.shape[3])
+        print(x.shape)
         x = self.decoder(x, feats)
         if self.model_type == "FF":
             x = torch.cat([x, self.estimated_depth], dim=1)

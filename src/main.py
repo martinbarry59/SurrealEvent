@@ -36,7 +36,7 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
                 os.makedirs(os.path.dirname(writer_path), exist_ok=True)
             video_writer = cv2.VideoWriter(writer_path, fourcc, 30, (5*depths.shape[3], depths.shape[2])) if (not train or batch_step % 20==0 and save_path) else None
             loss = 0
-            block_update = 3
+            block_update = 60
             N_update = 1
             t_start = random.randint(10, 1188 - N_update * block_update)
             t_end = t_start + N_update * block_update
@@ -68,15 +68,15 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
                         scaler.update()
                         model.detach_states()
                         loss = 0
+                with torch.no_grad():
+                    if video_writer:
+                        kerneled = kerneled-kerneled.min() 
+                        kerneled = kerneled/(kerneled.max()+1e-6)
 
-                if video_writer:
-                    kerneled = kerneled-kerneled.min() 
-                    kerneled = kerneled/(kerneled.max()+1e-6)
-
-                    images_to_write = [events, kerneled[0,0], kerneled[0,1], depth[0], outputs[0,0].squeeze(0)]
-                    add_frame_to_video(video_writer, images_to_write)
+                        images_to_write = [events, kerneled[0,0], kerneled[0,1], depth[0], outputs[0,0].squeeze(0)]
+                        add_frame_to_video(video_writer, images_to_write)
                 previous_output = outputs.detach().clone()
-                del  outputs
+                del  outputs, depth, events, kerneled
                 if t == t_end:
                     break
             with open(error_file, "a") as f:
@@ -89,7 +89,7 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
     return sum(loss_avg)/len(loss_avg)
 
 def main():
-    batch_size = 2
+    batch_size = 15
 
 
     train_dataset = EventDepthDataset(data_path+"/train/")
@@ -100,11 +100,10 @@ def main():
 
     # Load the model UNetMobileNetSurreal
     use_lstm = False
-    method = "add"
-    path_str = use_lstm *" LSTM" + (1-use_lstm) * "FF"
+    method = "concatenate" ## add or concatenate
+    path_str = use_lstm *"LSTM" + (1-use_lstm) * "FF"
     save_path = f'{results_path}/{path_str}_{method}'
     if os.path.exists(save_path):
-        
         shutil.rmtree(save_path)
     os.makedirs(save_path)
     model = UNetMobileNetSurreal(in_channels = 2 + 1 * (not use_lstm), out_channels = 1, use_lstm = use_lstm, method = method) ## if no LSTM use there we give previous output as input
