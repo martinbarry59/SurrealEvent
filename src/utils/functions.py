@@ -15,9 +15,9 @@ def eventstohistogram(events, height=260, width=346):
 
 def add_frame_to_video(video_writer, images):
     if images[0].shape[-1] == 4:
-        y = images[0][0,:,1] * 346
-        x = images[0][0,:,2] * 260
-        img = torch.zeros(260, 346)
+        y = torch.round(images[0][0,:,1] * 346)
+        x = torch.round(images[0][0,:,2] * 260)
+        img = torch.zeros(260, 346).to(images[0].device)
         img[x.long(), y.long()] = 1
     else:
         img = 1 * (torch.sum(images[0][0], dim=0) > 0)
