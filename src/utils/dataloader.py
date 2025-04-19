@@ -54,17 +54,30 @@ class EventDepthDataset(Dataset):
             events = torch.Tensor(f['vids'][:])  # shape [N_events, 4]
         with h5py.File(self.depth_files[idx], 'r') as f:
             depth = torch.Tensor(f['vids'][:])  # shape [T, H, W]
-        return events, depth
+        events = events[:, :4]
+        events[:, 1] = events[:, 1] / 346
+        events[:, 2] = events[:, 2] / 260
+        
+        ## repeat events for each time step
+        binned = events[:, 0] / (1/(30*12))
+        binned = torch.floor(binned).long()
+        max_events = 1000
+        event_list = torch.zeros(depth.shape[0], max_events, 4)
+        active_mask = torch.zeros(depth.shape[0], max_events, dtype=torch.bool)
+        for time in range(depth.shape[0]):
+            bin_idx = torch.argmax(1*(binned > time))
+            
+            min_idx = max(bin_idx - max_events,0)
+            tmp = events[min_idx:bin_idx, :]
+            event_list[time,:min(bin_idx,max_events)] = tmp
+            active_mask[time, :min(bin_idx,max_events)] = 1
+        return event_list, remove_border(depth) / 255, active_mask
 
 
 def sampling_events(t_old, t_new, events, old_events):
-    import matplotlib.pyplot as plt
     max_events = 1000
     sample =  events[(events[:, 0] >= t_old )* (events[:, 0] < t_new)][:,:-1]
-    
-    ## normalise x ,y 
-    sample[:,1] = sample[:,1]/346
-    sample[:,2] = sample[:,2]/260
+
     
     if sample.shape[0] != 0:
         old_events = torch.cat([old_events, sample], dim=0)
@@ -75,7 +88,10 @@ def sampling_events(t_old, t_new, events, old_events):
 
 def collate_event_batches(batch):
     # batch = list of (event_chunks, depth) tuples
-    
+    for sample in batch:
+        print(sample[0].shape)
+        print(sample[1].shape)
+        print(sample[2])
     batched_event_chunks = []
     batched_masks = []
     depths = []
