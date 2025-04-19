@@ -9,7 +9,8 @@ class EventTransformer(nn.Module):
         self.height = height
         self.num_queries = num_queries
         self.model_type = "Transformer"
-        
+
+        self.method = "Attention"
         # Embed each event (t, x, y, p)
         self.embedding = nn.Linear(input_dim, embed_dim)
 

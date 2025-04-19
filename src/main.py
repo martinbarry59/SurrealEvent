@@ -40,18 +40,21 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
             n_images = 5 if len(data) == 2 else 3
             video_writer = cv2.VideoWriter(writer_path, fourcc, 30, (n_images*depths.shape[3], depths.shape[2])) if (not train or batch_step % 10==0 and save_path) else None
             loss = 0
-            block_update = 10
+            block_update = 2
             N_update = int(1178 / block_update)
             t_start = random.randint(10, 1188 - N_update * block_update)
             t_end = t_start + N_update * block_update
             previous_output = None
-            for t in range(depths.shape[0]):
-                events = events_videos[t].to(device)
-                depth = depths[t].to(device)
+
+            for t in range(depths.shape[1]):
+                
+                events = events_videos[:, t].to(device)
+                depth = depths[:, t].to(device)
+                
                 mask = None
                 kerneled = None
                 if len(data) == 3:
-                    mask = masks[t].to(device)
+                    mask = masks[:,t].to(device)
                 with autocast(device_type="cuda"):
                     if t < t_start:
                         with torch.no_grad():
@@ -107,7 +110,6 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
     return sum(loss_avg)/len(loss_avg)
 
 def main():
-
     batch_size = 100
 
 
@@ -116,9 +118,9 @@ def main():
     # test_dataset = EventDepthDataset(data_path+"/test/")
     # test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=False, collate_fn=vectorized_collate)
     train_dataset = EventDepthDataset(data_path+"/train/")
-    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_event_batches)
+    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     test_dataset = EventDepthDataset(data_path+"/test/")
-    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_event_batches)
+    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
     # Load the model UNetMobileNetSurreal
     use_lstm = True
@@ -141,8 +143,6 @@ def main():
     criterion = torch.nn.SmoothL1Loss()
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=100, eta_min=1e-6)  # 10 = total number of epochs
-
-
 
     min_loss = float('inf')
     for epoch in range(100):
