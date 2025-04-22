@@ -38,9 +38,10 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
     model.train() if train else model.eval()
     scaler = torch.amp.GradScaler(device=device)
     with torch.set_grad_enabled(train):
-        tqdm_str = train *" training" + (1-train) * "testing"
+        tqdm_str = train *"training" + (1-train) * "testing"
         batch_tqdm = tqdm.tqdm(total=len(loader), desc=f"Batch {tqdm_str}" , position=0, leave=True)
         error_file = f'{save_path}/{tqdm_str}_error.txt' if save_path else None
+        epoch_loss = []
         for batch_step, data in enumerate(loader):
             if len(data) == 2:
                 events_videos, depths = data
@@ -54,10 +55,12 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
             video_writer = cv2.VideoWriter(writer_path, fourcc, 30, (n_images*depths.shape[3], depths.shape[2])) if (not train or batch_step % 10==0 and save_path) else None
             loss = 0
             block_update = 5
+
             N_update = int(1178 / block_update)
             t_start = random.randint(10, 1188 - N_update * block_update)
             t_end = t_start + N_update * block_update
             previous_output = None
+
             for t in range(depths.shape[1]):
                 print(t)
                 events = events_videos[:, t].to(device)
@@ -118,19 +121,21 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
                     #             plot_attention_map(attn_weights, events, 0, q, depth[0])
                     break
                 del  outputs, depth, events, kerneled
+
+            batch_loss = sum(loss_avg)/len(loss_avg)
+            epoch_loss.append(batch_loss)
             with open(error_file, "a") as f:
-                f.write(f"Epoch {epoch}, Batch {batch_step} / {len(loader)}, Loss: {sum(loss_avg)/len(loss_avg)}, LR: {optimizer.param_groups[0]['lr']}\n")
+                f.write(f"Epoch {epoch}, Batch {batch_step} / {len(loader)}, Loss: {batch_loss}, LR: {optimizer.param_groups[0]['lr']}\n")
             video_writer.release() if video_writer else None   
             if model.model_type != "Transformer":
                 model.reset_states()            
             batch_tqdm.update(1)
-            batch_tqdm.set_postfix({"loss": sum(loss_avg)/len(loss_avg)})
+            batch_tqdm.set_postfix({"loss": batch_loss})
         batch_tqdm.close()
-    return sum(loss_avg)/len(loss_avg)
+    return sum(epoch_loss)/len(epoch_loss)
 
 def main():
-    batch_size = 2
-
+    batch_size = 25
 
 
     # train_dataset = EventDepthDataset(data_path+"/train/")
@@ -143,7 +148,7 @@ def main():
     test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
     # Load the model UNetMobileNetSurreal
-    use_lstm = False
+    use_lstm = True
     method = "concatenate" ## add or concatenate
     path_str = use_lstm *"LSTM" + (1-use_lstm) * "FF"
     save_path = f'{results_path}/{path_str}_{method}'
@@ -153,7 +158,7 @@ def main():
     model = UNetMobileNetSurreal(in_channels = 2 + 1 * (not use_lstm), out_channels = 1, use_lstm = use_lstm, method = method) ## if no LSTM use there we give previous output as input
     model = EventTransformer() ## if no LSTM use there we give previous output as input
     if checkpoint_path:
-        checkpoint_file = f'{checkpoint_path}/model_epoch_0_{path_str}_{method}.pth'
+        checkpoint_file = f'{checkpoint_path}/model_epoch_1_{model.model_type}_{model.method}.pth'
         try:
             model.load_state_dict(torch.load(checkpoint_file))
         except:
@@ -162,12 +167,11 @@ def main():
 
     criterion = torch.nn.SmoothL1Loss()
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)
+
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10, eta_min=1e-6)  # 10 = total number of epochs
 
-
-
     min_loss = float('inf')
-    for epoch in range(10):
+    for epoch in range(100):
         train_loss = evaluation(model, train_loader, optimizer, epoch, criterion, train=True, save_path=save_path)
         test_loss = evaluation(model, test_loader, optimizer, epoch, criterion= criterion, train=False, save_path=save_path)
         scheduler.step()
