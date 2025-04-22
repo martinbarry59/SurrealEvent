@@ -28,6 +28,7 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
         tqdm_str = train *"training" + (1-train) * "testing"
         batch_tqdm = tqdm.tqdm(total=len(loader), desc=f"Batch {tqdm_str}" , position=0, leave=True)
         error_file = f'{save_path}/{tqdm_str}_error.txt' if save_path else None
+        epoch_loss = []
         for batch_step, data in enumerate(loader):
             if len(data) == 2:
                 events_videos, depths = data
@@ -40,7 +41,7 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
             n_images = 5 if len(data) == 2 else 3
             video_writer = cv2.VideoWriter(writer_path, fourcc, 30, (n_images*depths.shape[3], depths.shape[2])) if (not train or batch_step % 10==0 and save_path) else None
             loss = 0
-            block_update = 2
+            block_update = 30
             N_update = int(1178 / block_update)
             t_start = random.randint(10, 1188 - N_update * block_update)
             t_end = t_start + N_update * block_update
@@ -97,20 +98,21 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
                 previous_output = outputs.detach().clone()
                 del  outputs, depth, events, kerneled
                 if t == t_end:
-                    print("end of batch training")
                     break
+            batch_loss = sum(loss_avg)/len(loss_avg)
+            epoch_loss.append(batch_loss)
             with open(error_file, "a") as f:
-                f.write(f"Epoch {epoch}, Batch {batch_step} / {len(loader)}, Loss: {sum(loss_avg)/len(loss_avg)}, LR: {optimizer.param_groups[0]['lr']}\n")
+                f.write(f"Epoch {epoch}, Batch {batch_step} / {len(loader)}, Loss: {batch_loss}, LR: {optimizer.param_groups[0]['lr']}\n")
             video_writer.release() if video_writer else None   
             if model.model_type != "Transformer":
                 model.reset_states()            
             batch_tqdm.update(1)
-            batch_tqdm.set_postfix({"loss": sum(loss_avg)/len(loss_avg)})
+            batch_tqdm.set_postfix({"loss": batch_loss})
         batch_tqdm.close()
-    return sum(loss_avg)/len(loss_avg)
+    return sum(epoch_loss)/len(epoch_loss)
 
 def main():
-    batch_size = 100
+    batch_size = 25
 
 
     # train_dataset = EventDepthDataset(data_path+"/train/")
@@ -133,7 +135,7 @@ def main():
     model = UNetMobileNetSurreal(in_channels = 2 + 1 * (not use_lstm), out_channels = 1, use_lstm = use_lstm, method = method) ## if no LSTM use there we give previous output as input
     model = EventTransformer() ## if no LSTM use there we give previous output as input
     if checkpoint_path:
-        checkpoint_file = f'{checkpoint_path}/model_epoch_0_{path_str}_{method}.pth'
+        checkpoint_file = f'{checkpoint_path}/model_epoch_1_{model.model_type}_{model.method}.pth'
         try:
             model.load_state_dict(torch.load(checkpoint_file))
         except:
@@ -142,7 +144,7 @@ def main():
 
     criterion = torch.nn.SmoothL1Loss()
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=100, eta_min=1e-6)  # 10 = total number of epochs
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=2, eta_min=1e-6)  # 10 = total number of epochs
 
     min_loss = float('inf')
     for epoch in range(100):

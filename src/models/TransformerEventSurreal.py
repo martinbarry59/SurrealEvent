@@ -28,22 +28,25 @@ class EventTransformer(nn.Module):
         # Learnable attention pooling queries
         self.attn_pool_queries = nn.Parameter(torch.randn(1, num_queries, embed_dim))
         self.attn_proj = nn.MultiheadAttention(embed_dim=embed_dim, num_heads=heads, batch_first=True)
-
+        self.resolution = 8 ## the lower the more parameters
+        self.channels = 128
         # Projection to spatial latent map from pooled tokens
         self.project_to_grid = nn.Sequential(
-            nn.Linear(embed_dim * num_queries, (self.height // 16) * (self.width // 16) * 128)
+            nn.Linear(embed_dim * num_queries, (self.height // self.resolution) * (self.width // self.resolution) * self.channels)
         )
 
         # Image decoder
-        self.decoder = nn.Sequential(
-            nn.ConvTranspose2d(128, 64, kernel_size=4, stride=2, padding=1),
-            nn.ReLU(),
-            nn.ConvTranspose2d(64, 32, kernel_size=4, stride=2, padding=1),
-            nn.ReLU(),
-            nn.ConvTranspose2d(32, 16, kernel_size=4, stride=2, padding=1),
-            nn.ReLU(),
-            nn.ConvTranspose2d(16, 1, kernel_size=4, stride=2, padding=1)
-        )
+        self.decoder = torch.nn.Sequential()
+        n_layers = torch.log2(torch.Tensor([self.resolution])).int().item() - 1   # Number of upsampling layers
+
+        for n in range(n_layers):
+            print(n, self.channels //(2 ** n), self.channels // (2 ** (n+1)))
+            if n != n_layers - 1:
+                self.decoder.append(nn.ConvTranspose2d(self.channels //(2 ** n), self.channels // (2 ** (n+1)), kernel_size=4, stride=2, padding=1))
+                self.decoder.append(nn.ReLU())
+            else:
+                self.decoder.append(nn.ConvTranspose2d(self.channels // (2 ** n), 1, kernel_size=4, stride=2, padding=1))
+                self.decoder.append(nn.Sigmoid())
 
     def forward(self, events, mask):
         # events: [B, N, 4], mask: [B, N] (True = valid, False = padding)
@@ -61,10 +64,10 @@ class EventTransformer(nn.Module):
         # Flatten pooled tokens and project to latent spatial grid
         pooled_flat = pooled.flatten(start_dim=1)  # [B, num_queries * D]
         x_latent = self.project_to_grid(pooled_flat)  # [B, H'*W']
-        x_latent = x_latent.view(B, 128, self.height // 16, self.width // 16)  # [B, 1, H', W']
+        x_latent = x_latent.view(B, self.channels, self.height // self.resolution, self.width // self.resolution)  # [B, 1, H', W']
 
-        # Decode to full resolution depth map
+        # Decode to full self.resolution depth map
         depth_imgs = self.decoder(x_latent)  # [B, 1, H, W]
         depth_imgs = F.interpolate(depth_imgs, size=(self.height, self.width), mode='bilinear', align_corners=False)
-        depth_imgs = torch.nn.functional.sigmoid(depth_imgs)  # Normalize to [0, 1]
+        # depth_imgs = torch.nn.functional.sigmoid(depth_imgs)  # Normalize to [0, 1]
         return depth_imgs
