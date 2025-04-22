@@ -64,6 +64,7 @@ class EventDepthDataset(Dataset):
         max_events = 1000
         event_list = torch.zeros(depth.shape[0], max_events, 4)
         active_mask = torch.zeros(depth.shape[0], max_events, dtype=torch.bool)
+        active_mask[:, 0] = 1
         for time in range(depth.shape[0]):
             bin_idx = torch.argmax(1*(binned > time))
             

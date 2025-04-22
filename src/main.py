@@ -13,7 +13,20 @@ fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # or use 'XVID' for .avi
 from torch.amp import autocast
 import torch.nn.functional as F
 import shutil
-print(device)
+
+
+import matplotlib.pyplot as plt
+def plot_attention_map(attn_weights, events, b, q, img):
+    query_attention = attn_weights[b, q]  # shape: [N]
+    coords = events[b, :, 1:3].cpu().numpy()  # normalized x, y
+    xs = coords[:, 0] * img.shape[1]
+    ys = coords[:, 1] * img.shape[0]
+    plt.imshow(img.cpu().numpy(), cmap='gray')
+    plt.axis('off')
+    plt.scatter(xs, ys, c=query_attention.cpu().numpy(), cmap='viridis', s=5)
+    plt.colorbar(label='Attention Weight')
+    plt.title(f"Query {q} attention over events")
+    plt.show()
 def edge_aware_loss(pred, target):
     
     pred_dx = pred[ :, :, 1:] - pred[ :, :, :-1]
@@ -40,13 +53,13 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
             n_images = 5 if len(data) == 2 else 3
             video_writer = cv2.VideoWriter(writer_path, fourcc, 30, (n_images*depths.shape[3], depths.shape[2])) if (not train or batch_step % 10==0 and save_path) else None
             loss = 0
-            block_update = 2
+            block_update = 5
             N_update = int(1178 / block_update)
             t_start = random.randint(10, 1188 - N_update * block_update)
             t_end = t_start + N_update * block_update
             previous_output = None
             for t in range(depths.shape[1]):
-                
+                print(t)
                 events = events_videos[:, t].to(device)
                 depth = depths[:, t].to(device)
                 
@@ -58,23 +71,24 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
                     if t < t_start:
                         with torch.no_grad():
                             if mask is not None:
-                                outputs = model(events, mask)
+                                outputs, attn_weights = model(events, mask)
                             else:
                                 outputs, _, kerneled = model(events)
                     else:
                         
                         optimizer.zero_grad()
                         if mask is not None:
-                            outputs = model(events, mask)
+                            outputs, attn_weights = model(events, mask)
                         else:
                             outputs, _, kerneled = model(events)
+                
                 instant_loss = criterion(outputs.squeeze(1), depth)
                 loss_avg.append(instant_loss.item())
                 if t >= t_start:
                     loss += instant_loss
                     # loss += F.smooth_l1_loss(outputs, previous_output)
                     # loss += edge_aware_loss(outputs.squeeze(1), depth)
-                    if train and (((t-t_start) % block_update == (block_update-1)) or t == t_end):
+                    if train and (((t-t_start) % block_update == (block_update-1)) or t == t_end-1):
                         ## change dim 1 with dim 2
                         scaler.scale(loss).backward()
                         scaler.unscale_(optimizer)
@@ -85,7 +99,9 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
                             model.detach_states()
                         loss = 0
                 with torch.no_grad():
+                    
                     if video_writer:
+                        
                         if kerneled is not None:
                             kerneled = kerneled-kerneled.min() 
                             kerneled = kerneled/(kerneled.max()+1e-6)
@@ -94,9 +110,14 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
                             images_to_write = [events, depth[0], outputs[0,0].squeeze(0)]
                         add_frame_to_video(video_writer, images_to_write)
                 previous_output = outputs.detach().clone()
-                del  outputs, depth, events, kerneled
-                if t == t_end:
+                
+                if t == t_end -1:
+                    # with torch.no_grad():
+                    #     if video_writer:
+                    #         for q in range(attn_weights.shape[1]):
+                    #             plot_attention_map(attn_weights, events, 0, q, depth[0])
                     break
+                del  outputs, depth, events, kerneled
             with open(error_file, "a") as f:
                 f.write(f"Epoch {epoch}, Batch {batch_step} / {len(loader)}, Loss: {sum(loss_avg)/len(loss_avg)}, LR: {optimizer.param_groups[0]['lr']}\n")
             video_writer.release() if video_writer else None   
@@ -140,7 +161,7 @@ def main():
     model.to(device)
 
     criterion = torch.nn.SmoothL1Loss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-5, weight_decay=1e-5)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10, eta_min=1e-6)  # 10 = total number of epochs
 
 

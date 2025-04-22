@@ -2,7 +2,7 @@ from config import results_path
 import os
 import matplotlib.pyplot as plt
 
-files = ["training_error.txt", "testing_error.txt"]
+files = ["training_error.txt"]#, "testing_error.txt"]
 def find_loss(text):
     text = text.split(",")
     for subtext in text:
@@ -23,7 +23,7 @@ for filename in files:
     error_values = [sum(error_values[i:i+window])/window for i in range(len(error_values)-window)]
     error_values = error_values[:len(error_values)-window]
 
-    plt.plot(error_values, label=f'{filename.split("_")[0]}')
+    plt.plot(error_values[10:], label=f'{filename.split("_")[0]}')
 plt.legend()
 plt.xlabel('Batch Step')
 plt.ylabel('Error')
