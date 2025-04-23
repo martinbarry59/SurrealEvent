@@ -1,6 +1,7 @@
 from models.MobileNetSurreal import UNetMobileNetSurreal
 from models.TransformerEventSurreal import EventTransformer
-from utils.dataloader import EventDepthDataset, vectorized_collate, collate_event_batches
+from models.BOBW import BestOfBothWorld
+from utils.dataloader import EventDepthDataset, CNN_collate, Transformer_collate
 from utils.functions import add_frame_to_video
 import torch
 from config import data_path, results_path, checkpoint_path
@@ -13,7 +14,7 @@ fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # or use 'XVID' for .avi
 from torch.amp import autocast
 import torch.nn.functional as F
 import shutil
-
+import lpips
 
 import matplotlib.pyplot as plt
 def plot_attention_map(attn_weights, events, b, q, img):
@@ -34,6 +35,20 @@ def edge_aware_loss(pred, target):
     pred_dy = pred[ :, 1:, :] - pred[ :, :-1, :]
     target_dy = target[ :, 1:, :] - target[ :, :-1, :]
     return F.l1_loss(pred_dx, target_dx) + F.l1_loss(pred_dy, target_dy)
+
+def get_data(data, t):
+    if len(data) == 2:
+        events_videos, depths = data
+        return events_videos[t].to(device), depths[t].to(device), None
+    elif len(data) == 3:
+        events_videos, depths, masks = data
+        events = events_videos[t].to(device)
+        depth = depths[t].to(device)
+        mask = masks[t].to(device)
+        return events, depth, mask
+    else:
+        raise ValueError("Data must be a tuple of length 2 or 3")
+
 def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, save_path=None):
     model.train() if train else model.eval()
     scaler = torch.amp.GradScaler(device=device)
@@ -42,34 +57,30 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
         batch_tqdm = tqdm.tqdm(total=len(loader), desc=f"Batch {tqdm_str}" , position=0, leave=True)
         error_file = f'{save_path}/{tqdm_str}_error.txt' if save_path else None
         epoch_loss = []
+        
         for batch_step, data in enumerate(loader):
-            if len(data) == 2:
-                events_videos, depths = data
-            else:
-                events_videos, depths, masks = data
+            len_videos = 1188
+            
             loss_avg = [0]
             writer_path = f'{save_path}/{tqdm_str}_EPOCH_{epoch}_video_{batch_step}.mp4' if save_path else None
             if save_path and not os.path.exists(writer_path):
                 os.makedirs(os.path.dirname(writer_path), exist_ok=True)
-            n_images = 5 if len(data) == 2 else 3
-            video_writer = cv2.VideoWriter(writer_path, fourcc, 30, (n_images*depths.shape[3], depths.shape[2])) if (not train or batch_step % 10==0 and save_path) else None
-            loss = 0
-            block_update = 5
 
-            N_update = int(1178 / block_update)
-            t_start = random.randint(10, 1188 - N_update * block_update)
+
+            n_images = 5 if len(data) == 2 else 3
+            video_writer = cv2.VideoWriter(writer_path, fourcc, 30, (n_images*346,260)) if (not train or batch_step % 10==0 and save_path) else None
+            loss = 0
+            block_update = 100
+
+            N_update = int(5 / block_update)
+            t_start = random.randint(10, len_videos - N_update * block_update)
             t_end = t_start + N_update * block_update
             previous_output = None
 
-            for t in range(depths.shape[1]):
-                print(t)
-                events = events_videos[:, t].to(device)
-                depth = depths[:, t].to(device)
-                
-                mask = None
+            for t in range(len_videos):
+                events, depth, mask = get_data(data, t)
                 kerneled = None
-                if len(data) == 3:
-                    mask = masks[:,t].to(device)
+                
                 with autocast(device_type="cuda"):
                     if t < t_start:
                         with torch.no_grad():
@@ -84,8 +95,8 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
                             outputs, attn_weights = model(events, mask)
                         else:
                             outputs, _, kerneled = model(events)
-                
-                instant_loss = criterion(outputs.squeeze(1), depth)
+                ## repeat ouputs for 3 channels
+                instant_loss = criterion(outputs.repeat(1, 3, 1, 1), depth.unsqueeze(1).repeat(1, 3, 1, 1)).sum()
                 loss_avg.append(instant_loss.item())
                 if t >= t_start:
                     loss += instant_loss
@@ -135,28 +146,30 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
     return sum(epoch_loss)/len(epoch_loss)
 
 def main():
-    batch_size = 25
+    batch_size = 20
+    network = "BOBWFF" # LSTM, Transformer, BOBWFF, BOBWLSTM
+    method = "add" ## add or concatenate
 
 
-    # train_dataset = EventDepthDataset(data_path+"/train/")
-    # train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=vectorized_collate)
-    # test_dataset = EventDepthDataset(data_path+"/test/")
-    # test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=False, collate_fn=vectorized_collate)
+    loading_method = CNN_collate if (not ((network =="Transformer") or ("BOBW" in network))) else Transformer_collate
     train_dataset = EventDepthDataset(data_path+"/train/")
-    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=loading_method)
     test_dataset = EventDepthDataset(data_path+"/test/")
-    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=False, collate_fn=loading_method)
+
 
     # Load the model UNetMobileNetSurreal
-    use_lstm = True
-    method = "concatenate" ## add or concatenate
-    path_str = use_lstm *"LSTM" + (1-use_lstm) * "FF"
-    save_path = f'{results_path}/{path_str}_{method}'
+    
+    save_path = f'{results_path}/{network}_{method}'
     if os.path.exists(save_path):
         shutil.rmtree(save_path)
     os.makedirs(save_path)
-    model = UNetMobileNetSurreal(in_channels = 2 + 1 * (not use_lstm), out_channels = 1, use_lstm = use_lstm, method = method) ## if no LSTM use there we give previous output as input
-    model = EventTransformer() ## if no LSTM use there we give previous output as input
+    if network == "Transformer":
+        model = EventTransformer()
+    elif "BOBW" in network:
+        model = BestOfBothWorld(model_type=network)
+    else:
+        model = UNetMobileNetSurreal(in_channels = 2, out_channels = 1, net_type = network , method = method) ## if no LSTM use there we give previous output as input
     if checkpoint_path:
         checkpoint_file = f'{checkpoint_path}/model_epoch_1_{model.model_type}_{model.method}.pth'
         try:
@@ -165,7 +178,9 @@ def main():
             print("Checkpoint not found, starting from scratch")
     model.to(device)
 
-    criterion = torch.nn.SmoothL1Loss()
+    # criterion = torch.nn.SmoothL1Loss()
+    criterion = lpips.LPIPS(net='alex')
+    criterion.to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)
 
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10, eta_min=1e-6)  # 10 = total number of epochs

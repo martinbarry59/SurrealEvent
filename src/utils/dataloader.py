@@ -57,27 +57,27 @@ class EventDepthDataset(Dataset):
         events = events[:, :4]
         events[:, 1] = events[:, 1] / 346
         events[:, 2] = events[:, 2] / 260
-        
+        return events, depth
         ## repeat events for each time step
-        binned = events[:, 0] / (1/(30*12))
-        binned = torch.floor(binned).long()
-        max_events = 1000
-        event_list = torch.zeros(depth.shape[0], max_events, 4)
-        active_mask = torch.zeros(depth.shape[0], max_events, dtype=torch.bool)
-        active_mask[:, 0] = 1
-        for time in range(depth.shape[0]):
-            bin_idx = torch.argmax(1*(binned > time))
+        # binned = events[:, 0] / (1/(30*12))
+        # binned = torch.floor(binned).long()
+        # max_events = 1000
+        # event_list = torch.zeros(depth.shape[0], max_events, 4)
+        # active_mask = torch.zeros(depth.shape[0], max_events, dtype=torch.bool)
+        # active_mask[:, 0] = 1
+        # for time in range(depth.shape[0]):
+        #     bin_idx = torch.argmax(1*(binned > time))
             
-            min_idx = max(bin_idx - max_events,0)
-            tmp = events[min_idx:bin_idx, :]
-            event_list[time,:min(bin_idx,max_events)] = tmp
-            active_mask[time, :min(bin_idx,max_events)] = 1
-        return event_list, remove_border(depth) / 255, active_mask
+        #     min_idx = max(bin_idx - max_events,0)
+        #     tmp = events[min_idx:bin_idx, :]
+        #     event_list[time,:min(bin_idx,max_events)] = tmp
+        #     active_mask[time, :min(bin_idx,max_events)] = 1
+        # return event_list, remove_border(depth) / 255, active_mask
 
 
 def sampling_events(t_old, t_new, events, old_events):
     max_events = 1000
-    sample =  events[(events[:, 0] >= t_old )* (events[:, 0] < t_new)][:,:-1]
+    sample =  events[(events[:, 0] >= t_old )* (events[:, 0] < t_new)]
 
     
     if sample.shape[0] != 0:
@@ -87,12 +87,9 @@ def sampling_events(t_old, t_new, events, old_events):
 
     return old_events
 
-def collate_event_batches(batch):
+def Transformer_collate(batch):
     # batch = list of (event_chunks, depth) tuples
-    for sample in batch:
-        print(sample[0].shape)
-        print(sample[1].shape)
-        print(sample[2])
+    
     batched_event_chunks = []
     batched_masks = []
     depths = []
@@ -118,7 +115,7 @@ def collate_event_batches(batch):
         batched_masks.append(mask)
     return [batched_event_chunks, depths, batched_masks]
 
-def vectorized_collate(batch):
+def CNN_collate(batch):
     
     depths = []
     step = 1/(30*12)
@@ -127,9 +124,9 @@ def vectorized_collate(batch):
         events = event_dropout(events, p=0.05)
         depths.append(remove_border(depth) / 255)  # [T, H, W]
         times = events[:, 0]
-        x = events[:, 1].long()
-        y = events[:, 2].long()
-        
+
+        x = torch.round(events[:,1] * 346).long()
+        y = torch.round(events[:,2] * 260).long()
         polarities = ((events[:, 3] +1)/2).long()
         frame_n = (torch.floor(times / step)-1).long()
         event_frames[batch_n, frame_n, polarities , y, x] = 1

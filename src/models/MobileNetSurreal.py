@@ -33,32 +33,35 @@ def kernel_transform(data, conv):
     convoluted = convoluted - convoluted.min() / 0.1
     return convoluted
 class UNetMobileNetSurreal(nn.Module):
-    def __init__(self, in_channels, out_channels, use_lstm = False, method = "concatenate"):
+    def __init__(self, in_channels, out_channels, net_type, method = "concatenate"):
         super(UNetMobileNetSurreal, self).__init__()
         assert method in ["concatenate", "add"], "Method must be either 'concatenate' or 'add'"
-        
+        add_channels = 1 if net_type == "FF" else 0
+
         # Load pretrained MobileNetV2 as encoder backbone
-        self.model_type = "FF" if use_lstm is False else "LSTM"
+        self.model_type = net_type
         self.gausian_conv = generate_conv(kernel_size=7, seq_len=2)
         self.method = method
-        self.encoder = Encoder(in_channels)
+        self.encoder = Encoder(in_channels+add_channels)
         encoder_channels = [32, 24, 32, 64, 1280]
         
         if self.model_type == "LSTM":
             self.convlstm = ConvLSTM(
                 input_dim=encoder_channels[4],
-                hidden_dims=[encoder_channels[4], encoder_channels[4]],
+                hidden_dims=[128, 128],
                 kernel_size=3,
                 num_layers=2
             )
         else: 
             self.estimated_depth = None
+        encoder_channels = encoder_channels[:-1] + [128]
         self.decoder = Decoder(encoder_channels, method)
 
         self.final_conv = nn.Sequential(
-            nn.Conv2d(encoder_channels[0] + 1 * (not use_lstm), 32, kernel_size=3, padding=1),
+            nn.Conv2d(encoder_channels[0] + add_channels, 32, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
-            nn.Conv2d(32, out_channels, kernel_size=1)
+            nn.Conv2d(32, out_channels, kernel_size=1),
+            nn.Sigmoid()
         )
     def reset_states(self):
         if self.model_type == "LSTM":
@@ -67,7 +70,6 @@ class UNetMobileNetSurreal(nn.Module):
             self.estimated_depth = None
     def detach_states(self):
         if self.model_type == "LSTM":
-            print("detaching convlstm")
             self.convlstm.detach_hidden()
         else:
             self.estimated_depth = self.estimated_depth.detach()

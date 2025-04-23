@@ -30,7 +30,7 @@ class EventTransformer(nn.Module):
         self.attn_proj = nn.MultiheadAttention(embed_dim=embed_dim, num_heads=heads, batch_first=True)
 
         self.resolution = 8 ## the lower the more parameters
-        self.channels = 128
+        self.channels = 32
         # Projection to spatial latent map from pooled tokens
         self.project_to_grid = nn.Sequential(
             nn.Linear(embed_dim * num_queries, (self.height // self.resolution) * (self.width // self.resolution) * self.channels)

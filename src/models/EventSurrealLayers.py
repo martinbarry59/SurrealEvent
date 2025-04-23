@@ -72,7 +72,6 @@ class ConvLSTM(nn.Module):
         self.h = h
         self.c = c
     def detach_hidden(self):
-        print("deatching hidden states")
         for i in range(self.num_layers):
             self.h[i].detach_()
             self.c[i].detach_()
