@@ -16,7 +16,6 @@ import torch.nn.functional as F
 import shutil
 import lpips
 
-import matplotlib.pyplot as plt
 def plot_attention_map(attn_weights, events, b, q, img):
     query_attention = attn_weights[b, q]  # shape: [N]
     coords = events[b, :, 1:3].cpu().numpy()  # normalized x, y
