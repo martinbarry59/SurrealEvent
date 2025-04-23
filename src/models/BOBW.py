@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from  .EventSurrealLayers import Encoder, Decoder, ConvLSTM
 from utils.functions import eventstohistogram
-
+import math
 class BestOfBothWorld(nn.Module):
     def __init__(self, input_dim=4, input_channels = 2, model_type = "BOBWFF", embed_dim=128, depth=6, heads=4, width=346, height=260, num_queries=16):
         super().__init__()
@@ -21,7 +21,7 @@ class BestOfBothWorld(nn.Module):
         
         self.init_transformer(input_dim, embed_dim, depth, heads)
 
-        if self.model_type == "LSTM":
+        if "LSTM" in self.model_type:
             self.convlstm = ConvLSTM(
                 input_dim=self.encoder_channels[4],
                 hidden_dims=[128, 128],
@@ -49,8 +49,13 @@ class BestOfBothWorld(nn.Module):
         self.embedding = nn.Linear(input_dim, embed_dim)
 
         # Positional encodings for spatial and temporal info
-        self.pos_embed = nn.Sequential(
-            nn.Linear(4, embed_dim),
+        temporal_pe = self._build_sinusoidal_encoding(embed_dim)
+        ## register buffer to avoid reallocation
+        self.register_buffer("temporal_pe", temporal_pe, persistent=False)
+
+        # Learned spatial positional encoding
+        self.spatial_pe = nn.Sequential(
+            nn.Linear(2, embed_dim),
             nn.ReLU(),
             nn.Linear(embed_dim, embed_dim)
         )
@@ -83,11 +88,27 @@ class BestOfBothWorld(nn.Module):
             self.convlstm.detach_hidden()
         else:
             self.estimated_depth = self.estimated_depth.detach()
+    def _build_sinusoidal_encoding(self, dim, max_len=10000):
+        pe = torch.zeros(max_len, dim)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, dim, 2).float() * (-math.log(10000.0) / dim))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = pe.unsqueeze(0)  # shape [1, max_len, dim]
+        return pe
     def transformer_forward(self, events, mask):
         B, N, _ = events.shape
 
         # Token embedding + positional encoding
-        x = self.embedding(events) + self.pos_embed(events)  # [B, N, D]
+        # Token embedding + positional encoding
+        x_base = self.embedding(events)  # [B, N, D]
+
+        # Sinusoidal temporal encoding
+        t_norm = (events[:,:, 0] * 9999).long().clamp(0, 9999)  # scale time to [0, 9999]
+        pos_time = self.temporal_pe[:, t_norm].squeeze(0)  # [1, B, N, D] -> [B, N, D]
+
+        pos_xy = self.spatial_pe(events[:, :, 1:3])  # [B, N, D]
+        x = x_base + pos_time + pos_xy  # [B, N, D]
         
         # Transformer over tokens
         x = self.transformer(x, src_key_padding_mask=~mask)  # [B, N, D]
@@ -111,6 +132,8 @@ class BestOfBothWorld(nn.Module):
             if self.estimated_depth is None:
                 self.estimated_depth = torch.zeros_like(hist_events[:, 0:1, :, :], device=hist_events.device)
             x = torch.cat([hist_events, self.estimated_depth], dim=1)  # [B, in_channels, H, W]
+        else:
+            x = hist_events
         CNN_encoder, feats = self.encoder(x)
         # Concatenate the outputs from the transformer and CNN
         x = torch.cat([transformer_encoder, CNN_encoder], dim=1)
@@ -118,9 +141,9 @@ class BestOfBothWorld(nn.Module):
         if "LSTM" in self.model_type:
             x = self.convlstm(x)
         # Decode to full self.resolution depth map
-        depth_imgs = self.decoder(x, feats)
+        x = self.decoder(x, feats)
         if "FF" in self.model_type:
-            x = torch.cat([depth_imgs, self.estimated_depth], dim=1)
+            x = torch.cat([x, self.estimated_depth], dim=1)
         output = self.final_conv(x)
         self.estimated_depth = output.detach() if "FF" in self.model_type else None
         return output, None

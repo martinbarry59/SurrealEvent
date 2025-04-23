@@ -147,7 +147,7 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
 
 def main():
     batch_size = 20
-    network = "BOBWFF" # LSTM, Transformer, BOBWFF, BOBWLSTM
+    network = "BOBWLSTM" # LSTM, Transformer, BOBWFF, BOBWLSTM
     method = "add" ## add or concatenate
 
 

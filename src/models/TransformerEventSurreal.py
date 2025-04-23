@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
+import math
 class EventTransformer(nn.Module):
     def __init__(self, input_dim=4, embed_dim=128, depth=6, heads=4, width=346, height=260, num_queries=16):
         super().__init__()
@@ -15,8 +15,11 @@ class EventTransformer(nn.Module):
         self.embedding = nn.Linear(input_dim, embed_dim)
 
         # Positional encodings for spatial and temporal info
-        self.pos_embed = nn.Sequential(
-            nn.Linear(4, embed_dim),
+        self.temporal_pe = self._build_sinusoidal_encoding(embed_dim)
+
+        # Learned spatial positional encoding
+        self.spatial_pe = nn.Sequential(
+            nn.Linear(2, embed_dim),
             nn.ReLU(),
             nn.Linear(embed_dim, embed_dim)
         )
@@ -48,13 +51,27 @@ class EventTransformer(nn.Module):
             else:
                 self.decoder.append(nn.ConvTranspose2d(self.channels // (2 ** n), 1, kernel_size=4, stride=2, padding=1))
                 self.decoder.append(nn.Sigmoid())
-
+    def _build_sinusoidal_encoding(self, dim, max_len=10000):
+        pe = torch.zeros(max_len, dim)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, dim, 2).float() * (-math.log(10000.0) / dim))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = pe.unsqueeze(0)  # shape [1, max_len, dim]
+        return pe
     def forward(self, events, mask):
         # events: [B, N, 4], mask: [B, N] (True = valid, False = padding)
         B, N, _ = events.shape
 
         # Token embedding + positional encoding
-        x = self.embedding(events) + self.pos_embed(events)  # [B, N, D]
+        x_base = self.embedding(events)  # [B, N, D]
+
+        # Sinusoidal temporal encoding
+        t_norm = (events[:, :, 0] * 9999).long().clamp(0, 9999)  # scale time to [0, 9999]
+        pos_time = self.temporal_pe[:, t_norm]  # [1, B, N, D] -> [B, N, D]
+
+        pos_xy = self.spatial_pe(events[:, :, 1:3])  # [B, N, D]
+        x = x_base + pos_time + pos_xy  # [B, N, D]
         
         # Transformer over tokens
         x = self.transformer(x, src_key_padding_mask=~mask)  # [B, N, D]
