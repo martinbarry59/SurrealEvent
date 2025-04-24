@@ -69,13 +69,12 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
             n_images = 5 if len(data) == 2 else 3
             video_writer = cv2.VideoWriter(writer_path, fourcc, 30, (n_images*346,260)) if (not train or batch_step % 10==0 and save_path) else None
             loss = 0
-            block_update = 100
+            block_update = 50
 
-            N_update = int(5 / block_update)
+            N_update = 10 # int((len_videos-10) / block_update)
             t_start = random.randint(10, len_videos - N_update * block_update)
             t_end = t_start + N_update * block_update
             previous_output = None
-
             for t in range(len_videos):
                 events, depth, mask = get_data(data, t)
                 kerneled = None
