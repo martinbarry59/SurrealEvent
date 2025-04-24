@@ -99,6 +99,8 @@ class Decoder(nn.Module):
         c = 2 if self.method == "concatenate" else 1
         encoder_channels[-1] = int(encoder_channels[-1] / c)
         self.decoder_layers = []
+        
+
         for i in range(len(encoder_channels)-1):
             if i == 0:
                 self.decoder_layers.append(self.upsample_block( c * encoder_channels[i], 32))
@@ -114,6 +116,9 @@ class Decoder(nn.Module):
             nn.ReLU(inplace=True)
         )
     def forward(self, x, feats):
+
+        # Apply the bottleneck layer
+        
         for i, layer in reversed(list(enumerate(self.decoder_layers))):
             x = layer(x)
             if i != 0:

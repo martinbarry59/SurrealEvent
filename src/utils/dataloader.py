@@ -72,6 +72,7 @@ class EventDepthDataset(Dataset):
             events = torch.Tensor(f['vids'][:])  # shape [N_events, 4]
         with h5py.File(self.depth_files[idx], 'r') as f:
             depth = torch.Tensor(f['vids'][:])  # shape [T, H, W]
+
         events = events[:, :4]
         events[:, 1] = events[:, 1] / 346
         events[:, 2] = events[:, 2] / 260
