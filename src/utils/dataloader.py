@@ -4,7 +4,9 @@ import h5py
 from torch.nn.utils.rnn import pad_sequence
 import os
 import glob
+import tqdm
 from torchvision.transforms import v2 
+import shutil
 import random
 class RandomChoice(torch.nn.Module):
     def __init__(self, transforms):
@@ -44,8 +46,24 @@ class EventDepthDataset(Dataset):
     def __init__(self, h5_dir):
         super().__init__()
         self.events_files = glob.glob(os.path.join(h5_dir, "**/*dvs.h5"), recursive = True)
+        print(h5_dir)
+        print(len(self.events_files))
         self.depth_files = [f.replace("dvs.h5", "vid_slomo_depth.h5") for f in self.events_files]
-
+    def test_corruption(self):
+        for i in tqdm.tqdm(range(len(self.events_files))):
+            try:
+                with h5py.File(self.events_files[i], 'r') as f:
+                    events = torch.Tensor(f['vids'][:])  # shape [N_events, 4]
+                with h5py.File(self.depth_files[i], 'r') as f:
+                    depth = torch.Tensor(f['vids'][:])  # shape [T, H, W]
+            except:
+                
+                print(f"Error reading file {self.events_files[i]} or {self.depth_files[i]}")
+                ## delete parent folder
+                parent_folder = os.path.dirname(self.events_files[i])
+                if os.path.exists(parent_folder):
+                    shutil.rmtree(parent_folder)
+                    print(f"Deleted folder {parent_folder}")
     def __len__(self):
         return len(self.events_files)
 
@@ -134,3 +152,7 @@ def CNN_collate(batch):
     event_frames = event_frames.permute(1,0, 2, 3, 4)
     event_frames, depths = apply_augmentations(event_frames, depths)
     return [event_frames, depths]
+if __name__ == "__main__":
+    data_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../dataset/")
+    train_dataset = EventDepthDataset(data_path)
+    train_dataset.test_corruption()

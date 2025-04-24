@@ -69,9 +69,9 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
             n_images = 5 if len(data) == 2 else 3
             video_writer = cv2.VideoWriter(writer_path, fourcc, 30, (n_images*346,260)) if (not train or batch_step % 10==0 and save_path) else None
             loss = 0
-            block_update = 100
+            block_update = 500
 
-            N_update = int(5 / block_update)
+            N_update = int(2/ block_update)
             t_start = random.randint(10, len_videos - N_update * block_update)
             t_end = t_start + N_update * block_update
             previous_output = None
@@ -98,7 +98,7 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
                 instant_loss = criterion(outputs.repeat(1, 3, 1, 1), depth.unsqueeze(1).repeat(1, 3, 1, 1)).sum()
                 loss_avg.append(instant_loss.item())
                 if t >= t_start:
-                    loss += instant_loss
+                    loss += instant_loss / block_update
                     # loss += F.smooth_l1_loss(outputs, previous_output)
                     # loss += edge_aware_loss(outputs.squeeze(1), depth)
                     if train and (((t-t_start) % block_update == (block_update-1)) or t == t_end-1):
@@ -145,7 +145,7 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
     return sum(epoch_loss)/len(epoch_loss)
 
 def main():
-    batch_size = 20
+    batch_size = 50
     network = "BOBWLSTM" # LSTM, Transformer, BOBWFF, BOBWLSTM
     method = "add" ## add or concatenate
 
