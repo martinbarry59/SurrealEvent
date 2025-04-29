@@ -15,7 +15,7 @@ from torch.amp import autocast
 import torch.nn.functional as F
 import shutil
 import lpips
-
+import torchvision.transforms as T
 def plot_attention_map(attn_weights, events, b, q, img):
     query_attention = attn_weights[b, q]  # shape: [N]
     coords = events[b, :, 1:3].cpu().numpy()  # normalized x, y
@@ -47,10 +47,41 @@ def get_data(data, t):
         return events, depth, mask
     else:
         raise ValueError("Data must be a tuple of length 2 or 3")
+def preprocess(batch):
+    transforms = T.Compose(
+        [
+            T.Normalize(mean=0.5, std=0.5),  # map [0, 1] into [-1, 1]
+            T.Resize(size=(264,352)),
+        ]
+    )
+    batch = transforms(batch)
+    return batch
+
+def postprocess(batch):
+    batch = (batch + 1) / 2
+    batch = torch.nn.functional.interpolate(batch, size=(260, 346), mode='bilinear', align_corners=False)
+    return batch
+def warp_image(img, flow):
+    N, C, H, W = img.shape
+    img = img.float()
+    grid_y, grid_x = torch.meshgrid(torch.arange(0, H), torch.arange(0, W), indexing='ij')
+    grid = torch.stack((grid_x, grid_y), 2).float().cuda()  # [H, W, 2]
+    grid = grid[None].repeat(N, 1, 1, 1)  # [N, H, W, 2]
+    flow = flow.permute(0, 2, 3, 1)  # [N, H, W, 2]
+    new_grid = grid + flow
+    # Normalize to [-1, 1]
+    new_grid[..., 0] = 2.0 * new_grid[..., 0] / (W - 1) - 1.0
+    new_grid[..., 1] = 2.0 * new_grid[..., 1] / (H - 1) - 1.0
+    warped = F.grid_sample(img, new_grid, mode='bilinear', padding_mode='border', align_corners=True)
+    return warped
 
 def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, save_path=None):
     model.train() if train else model.eval()
     scaler = torch.amp.GradScaler(device=device)
+    from torchvision.models.optical_flow import raft_large
+
+    flow_model = raft_large(pretrained=True, progress=False).to(device)
+    flow_model = flow_model.eval()
     with torch.set_grad_enabled(train):
         tqdm_str = train *"training" + (1-train) * "testing"
         batch_tqdm = tqdm.tqdm(total=len(loader), desc=f"Batch {tqdm_str}" , position=0, leave=True)
@@ -76,7 +107,7 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
             t_start = random.randint(10, len_videos - N_update * block_update)
             t_end = t_start + N_update * block_update
             previous_output = None
-            for t in range(len_videos):
+            for t in range(1,len_videos):
                 events, depth, mask = get_data(data, t)
                 kerneled = None
                 
@@ -99,6 +130,24 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
                 loss_avg.append(instant_loss.item())
                 if t >= t_start:
                     loss += instant_loss / block_update
+                    with torch.no_grad():
+                        _, depth_previous, _ =get_data(data, t-1)
+                        flowPut = preprocess(depth.unsqueeze(1))
+                        
+                        pre_flowPut = preprocess(depth_previous.unsqueeze(1))
+                        flow_batch = flow_model(pre_flowPut.repeat(1, 3, 1, 1).float(),flowPut.repeat(1, 3, 1, 1).float())
+                    predicted_flows = flow_batch[-1]
+                    warped_output = warp_image(preprocess(previous_output), predicted_flows)
+                    warped_depth = warp_image(preprocess(depth_previous.unsqueeze(1)), predicted_flows)
+                    
+
+                    loss_t = F.l1_loss(postprocess(warped_output), outputs)
+                    loss_est = torch.exp(- 50 * torch.nn.MSELoss()(postprocess(warped_depth), depth.unsqueeze(1)))
+                    TC_loss = loss_t * loss_est
+                    loss += 50 * TC_loss / block_update
+
+                    
+                    ## show RGB image 
                     # loss += F.smooth_l1_loss(outputs, previous_output)
                     # loss += edge_aware_loss(outputs.squeeze(1), depth)
                     if train and (((t-t_start) % block_update == (block_update-1)) or t == t_end-1):
