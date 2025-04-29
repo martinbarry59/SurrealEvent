@@ -70,7 +70,7 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
             video_writer = cv2.VideoWriter(writer_path, fourcc, 30, (n_images*346,260)) if (not train or batch_step % 10==0 and save_path) else None
             loss = 0
 
-            block_update = 50
+            block_update = 30
 
             N_update = 10 # int((len_videos-10) / block_update)
             t_start = random.randint(10, len_videos - N_update * block_update)
@@ -145,7 +145,7 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
     return sum(epoch_loss)/len(epoch_loss)
 
 def main():
-    batch_size = 50
+    batch_size = 15
     network = "BOBWLSTM" # LSTM, Transformer, BOBWFF, BOBWLSTM
     method = "add" ## add or concatenate
 
@@ -155,7 +155,7 @@ def main():
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=loading_method)
     test_dataset = EventDepthDataset(data_path+"/test/")
     test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=False, collate_fn=loading_method)
-
+    epoch_checkpoint = 0
 
     # Load the model UNetMobileNetSurreal
     
@@ -170,7 +170,9 @@ def main():
     else:
         model = UNetMobileNetSurreal(in_channels = 2, out_channels = 1, net_type = network , method = method) ## if no LSTM use there we give previous output as input
     if checkpoint_path:
-        checkpoint_file = f'{checkpoint_path}/model_epoch_1_{model.model_type}_{model.method}.pth'
+        checkpoint_file = f'{checkpoint_path}/model_epoch_3_{model.model_type}_{model.method}.pth'
+        epoch_checkpoint = int(checkpoint_file.split("_")[2]) + 1
+        print(f"Loading checkpoint from {checkpoint_file}")
         try:
             model.load_state_dict(torch.load(checkpoint_file))
         except:
@@ -186,16 +188,17 @@ def main():
 
     min_loss = float('inf')
     for epoch in range(100):
-        train_loss = evaluation(model, train_loader, optimizer, epoch, criterion, train=True, save_path=save_path)
-        test_loss = evaluation(model, test_loader, optimizer, epoch, criterion= criterion, train=False, save_path=save_path)
-        scheduler.step()
-        if test_loss < min_loss:
-            min_loss = test_loss
-            torch.save(model.state_dict(), f'{checkpoint_path}/model_epoch_{epoch}_{model.model_type}_{model.method}.pth')
-        ## divide by 10 the lr at each epocj
+        if epoch >= epoch_checkpoint:
+            train_loss = evaluation(model, train_loader, optimizer, epoch, criterion, train=True, save_path=save_path)
+            test_loss = evaluation(model, test_loader, optimizer, epoch, criterion= criterion, train=False, save_path=save_path)
+        
+            if test_loss < min_loss:
+                min_loss = test_loss
+                torch.save(model.state_dict(), f'{checkpoint_path}/model_epoch_{epoch}_{model.model_type}_{model.method}.pth')
+            ## divide by 10 the lr at each epocj
 
-        print(f"Epoch {epoch}, Train Loss: {train_loss:.4f}, Test Loss: {test_loss:.4f}")
-    
+            print(f"Epoch {epoch + epoch_checkpoint}, Train Loss: {train_loss:.4f}, Test Loss: {test_loss:.4f}")
+        scheduler.step()
 
 if __name__ == "__main__":
         
