@@ -16,6 +16,8 @@ import torch.nn.functional as F
 import shutil
 import lpips
 import torchvision.transforms as T
+from cProfile import Profile
+from pstats import SortKey, Stats
 def plot_attention_map(attn_weights, events, b, q, img):
     query_attention = attn_weights[b, q]  # shape: [N]
     coords = events[b, :, 1:3].cpu().numpy()  # normalized x, y
@@ -61,23 +63,28 @@ def postprocess(batch):
     batch = (batch + 1) / 2
     batch = torch.nn.functional.interpolate(batch, size=(260, 346), mode='bilinear', align_corners=False)
     return batch
-def warp_image(img, flow):
-    N, C, H, W = img.shape
-    img = img.float()
-    grid_y, grid_x = torch.meshgrid(torch.arange(0, H), torch.arange(0, W), indexing='ij')
-    grid = torch.stack((grid_x, grid_y), 2).float().cuda()  # [H, W, 2]
-    grid = grid[None].repeat(N, 1, 1, 1)  # [N, H, W, 2]
-    flow = flow.permute(0, 2, 3, 1)  # [N, H, W, 2]
-    new_grid = grid + flow
-    # Normalize to [-1, 1]
-    new_grid[..., 0] = 2.0 * new_grid[..., 0] / (W - 1) - 1.0
-    new_grid[..., 1] = 2.0 * new_grid[..., 1] / (H - 1) - 1.0
-    warped = F.grid_sample(img, new_grid, mode='bilinear', padding_mode='border', align_corners=True)
-    return warped
+class Warper:
+    def __init__(self, shapes):
+        super(Warper, self).__init__()
+        N, C, H, W = shapes
+        grid_y, grid_x = torch.meshgrid(torch.arange(0, H), torch.arange(0, W), indexing='ij')
+        self.grid = torch.stack((grid_x, grid_y), 2).float().cuda()  # [H, W, 2]
+        self.grid = self.grid[None].repeat(N, 1, 1, 1)  # [N, H, W, 2]
+    def warp_image(self,img, flow):
+        
+        flow = flow.permute(0, 2, 3, 1)  # [N, H, W, 2]
+        new_grid = self.grid + flow
+        # Normalize to [-1, 1]
+        new_grid[..., 0] = 2.0 * new_grid[..., 0] / (W - 1) - 1.0
+        new_grid[..., 1] = 2.0 * new_grid[..., 1] / (H - 1) - 1.0
+        warped = F.grid_sample(img.float(), new_grid, mode='bilinear', padding_mode='border', align_corners=True)
+        return warped
 
 def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, save_path=None):
+    profiler = Profile()
+    profiler.enable()
     model.train() if train else model.eval()
-    scaler = torch.amp.GradScaler(device=device)
+    # scaler = torch.amp.GradScaler(device=device)
     from torchvision.models.optical_flow import raft_large
 
     flow_model = raft_large(pretrained=True, progress=False).to(device)
@@ -100,10 +107,10 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
             n_images = 5 if len(data) == 2 else 3
             video_writer = cv2.VideoWriter(writer_path, fourcc, 30, (n_images*346,260)) if (not train or batch_step % 10==0 and save_path) else None
             loss = 0
-
+            training_step = 300
             block_update = 30
 
-            N_update = 10 # int((len_videos-10) / block_update)
+            N_update = int(training_step / block_update)
             t_start = random.randint(10, len_videos - N_update * block_update)
             t_end = t_start + N_update * block_update
             previous_output = None
@@ -111,52 +118,41 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
                 events, depth, mask = get_data(data, t)
                 kerneled = None
                 
-                with autocast(device_type="cuda"):
-                    if t < t_start:
-                        with torch.no_grad():
-                            if mask is not None:
-                                outputs, attn_weights = model(events, mask)
-                            else:
-                                outputs, _, kerneled = model(events)
-                    else:
-                        
-                        optimizer.zero_grad()
+                # with autocast(device_type="cuda"):
+                if t < t_start:
+                    with torch.no_grad():
                         if mask is not None:
                             outputs, attn_weights = model(events, mask)
                         else:
                             outputs, _, kerneled = model(events)
+                else:
+                    
+                    optimizer.zero_grad()
+                    if mask is not None:
+                        outputs, attn_weights = model(events, mask)
+                    else:
+                        outputs, _, kerneled = model(events)
                 ## repeat ouputs for 3 channels
                 instant_loss = criterion(outputs.repeat(1, 3, 1, 1), depth.unsqueeze(1).repeat(1, 3, 1, 1)).sum()
                 loss_avg.append(instant_loss.item())
                 if t >= t_start:
                     loss += instant_loss / block_update
                     with torch.no_grad():
-                        _, depth_previous, _ =get_data(data, t-1)
-                        flowPut = preprocess(depth.unsqueeze(1))
-                        
-                        pre_flowPut = preprocess(depth_previous.unsqueeze(1))
-                        flow_batch = flow_model(pre_flowPut.repeat(1, 3, 1, 1).float(),flowPut.repeat(1, 3, 1, 1).float())
-                    predicted_flows = flow_batch[-1]
-                    warped_output = warp_image(preprocess(previous_output), predicted_flows)
-                    warped_depth = warp_image(preprocess(depth_previous.unsqueeze(1)), predicted_flows)
-                    
+                        _, depth_previous, _ = get_data(data, t-1)
 
-                    loss_t = F.l1_loss(postprocess(warped_output), outputs)
-                    loss_est = torch.exp(- 50 * torch.nn.MSELoss()(postprocess(warped_depth), depth.unsqueeze(1)))
+                    loss_t = F.l1_loss(previous_output, outputs)
+                    loss_est = torch.exp(- 50 * torch.nn.MSELoss()(depth_previous, depth))
                     TC_loss = loss_t * loss_est
-                    loss += 50 * TC_loss / block_update
+                    loss += 10 * TC_loss / block_update
 
-                    
-                    ## show RGB image 
-                    # loss += F.smooth_l1_loss(outputs, previous_output)
-                    # loss += edge_aware_loss(outputs.squeeze(1), depth)
                     if train and (((t-t_start) % block_update == (block_update-1)) or t == t_end-1):
-                        ## change dim 1 with dim 2
-                        scaler.scale(loss).backward()
-                        scaler.unscale_(optimizer)
-                        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
-                        scaler.step(optimizer)
-                        scaler.update()
+                        loss.backward()
+                        optimizer.step()
+                        # scaler.scale(loss).backward()
+                        # scaler.unscale_(optimizer)
+                        # torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
+                        # scaler.step(optimizer)
+                        # scaler.update()
                         if model.model_type != "Transformer":
                             model.detach_states()
                         loss = 0
@@ -190,6 +186,12 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
                 model.reset_states()            
             batch_tqdm.update(1)
             batch_tqdm.set_postfix({"loss": batch_loss})
+            profiler.disable()
+            stats = Stats(profiler)
+            stats.strip_dirs()
+            stats.sort_stats(SortKey.CUMULATIVE)
+            stats.print_stats()
+    # stats.dump_stats("profiling_results.prof")
         batch_tqdm.close()
     return sum(epoch_loss)/len(epoch_loss)
 
@@ -197,7 +199,7 @@ def main():
     batch_size = 15
     network = "BOBWLSTM" # LSTM, Transformer, BOBWFF, BOBWLSTM
     method = "add" ## add or concatenate
-
+    
 
     loading_method = CNN_collate if (not ((network =="Transformer") or ("BOBW" in network))) else Transformer_collate
     train_dataset = EventDepthDataset(data_path+"/train/")
@@ -250,5 +252,6 @@ def main():
         scheduler.step()
 
 if __name__ == "__main__":
-        
+    
     main()
+    

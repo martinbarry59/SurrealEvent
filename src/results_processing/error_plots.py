@@ -16,9 +16,10 @@ for filename in files:
     errors = [line for line in lines if "Batch" in line]
 
     error_values = [find_loss(text) for text in errors]
+    print(f"mean error: {sum(error_values)/len(error_values)}")
     # plt.plot(training_errors, label=f'Training Errors {filename}')
     ## temporal smoothing of the error
-    window = 2
+    window = 10
     error_values = [error_values[i] for i in range(len(error_values)) if i % window == 0]
     error_values = [sum(error_values[i:i+window])/window for i in range(len(error_values)-window)]
     error_values = error_values[:len(error_values)-window]
