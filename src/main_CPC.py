@@ -109,11 +109,12 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
         batch_tqdm = tqdm.tqdm(total=len(loader), desc=f"Batch {tqdm_str}" , position=0, leave=True)
         error_file = f'{save_path}/{tqdm_str}_error.txt' if save_path else None
         epoch_loss = []
-        
+        top1_epoch, top3_epoch, top5_epoch = [], [], []
         for batch_step, data in enumerate(loader):
             len_videos = 1188
             
-            loss_avg = [0]
+            loss_avg = []
+            top1_avg, top3_avg, top5_avg = [], [], []
             writer_path = f'{save_path}/{tqdm_str}_EPOCH_{epoch}_video_{batch_step}.mp4' if save_path else None
             if save_path and not os.path.exists(writer_path):
                 os.makedirs(os.path.dirname(writer_path), exist_ok=True)
@@ -122,8 +123,8 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
             n_images = 5 if len(data) == 2 else 3
             video_writer = cv2.VideoWriter(writer_path, fourcc, 30, (n_images*346,260)) if (not train or batch_step % 10==0 and save_path) else None
             loss = 0
-            training_steps = 12
-            block_update = 6
+            training_steps = 300
+            block_update = 20
 
             N_update = int(training_steps / block_update)
             t_start = random.randint(10, len_videos - N_update * block_update)
@@ -153,8 +154,12 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
                         GT = torch.stack(GT[1:], dim=0)
                         
                         loss, target_, score = compute_CPC_loss(predictions, GT, criterion)
-                        loss_avg.append(loss.item())
+                        
                         top1, top3, top5 = calc_topk_accuracy(score, target_, (1, 3, 5))
+                        loss_avg.append(loss.item())
+                        top1_avg.append(top1.item())
+                        top3_avg.append(top3.item())
+                        top5_avg.append(top5.item())
                         del score, target_
                         # print(loss, top1, top3, top5)
                         if train:
@@ -191,22 +196,25 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
                     break
                 del  encoding, depth, events, kerneled
 
-            batch_loss = sum(loss_avg)/len(loss_avg)
-            epoch_loss.append(batch_loss)
+            epoch_loss.append(sum(loss_avg)/len(loss_avg))
+            top1_epoch.append(sum(top1_avg)/len(top1_avg))
+            top3_epoch.append(sum(top3_avg)/len(top3_avg))
+            top5_epoch.append(sum(top5_avg)/len(top5_avg))
+            string_value = f"Epoch {epoch}, Batch {batch_step} / {len(loader)}, Loss: {epoch_loss[-1]}, Top1: {top1_epoch[-1]}, Top3: {top3_epoch[-1]}, Top5: {top5_epoch[-1]}, LR: {optimizer.param_groups[0]['lr']}"
             with open(error_file, "a") as f:
-                f.write(f"Epoch {epoch}, Batch {batch_step} / {len(loader)}, Loss: {batch_loss}, LR: {optimizer.param_groups[0]['lr']}\n")
+                f.write(string_value+"\n")
             video_writer.release() if video_writer else None   
             if model.model_type != "Transformer":
                 model.reset_states()            
             batch_tqdm.update(1)
-            batch_tqdm.set_postfix({"loss": batch_loss})
+            batch_tqdm.set_postfix({"loss": epoch_loss[-1], "top1": top1_epoch[-1], "top3": top3_epoch[-1], "top5": top5_epoch[-1]})
            
     # stats.dump_stats("profiling_results.prof")
         batch_tqdm.close()
     return sum(epoch_loss)/len(epoch_loss)
 
 def main():
-    batch_size = 2
+    batch_size = 20
     network = "BOBWLSTM_CPC" # LSTM, Transformer, BOBWFF, BOBWLSTM
     
 
