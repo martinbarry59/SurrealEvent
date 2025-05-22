@@ -8,6 +8,7 @@ dependencies = [
     "h5py>=3.13.0",
     "lpips>=0.1.4",
     "opencv-python>=4.11.0.86",
+    "pytorch-ignite>=0.5.2",
     "torch>=2.6.0",
     "torchvision>=0.21.0",
     "tqdm>=4.67.1",
