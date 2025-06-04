@@ -20,32 +20,30 @@ class BestOfBothWorld(nn.Module):
         
         
         self.init_transformer(input_dim, embed_dim, depth, heads)
-
+        C = 256
         if "LSTM" in self.model_type:
             self.convlstm = ConvLSTM(
                 input_dim=self.encoder_channels[4],
-                hidden_dims=[128, 128],
+                hidden_dims=[C, C],
                 kernel_size=3,
                 num_layers=2
             )
-            self.encoder_channels = self.encoder_channels[:-1] + [128]
+            self.encoder_channels = self.encoder_channels[:-1] + [C]
         else: 
             self.estimated_depth = None
-        pred_size = 128
-        self.network_pred = nn.Sequential(
-            nn.Conv2d(
-                pred_size,
-                pred_size,
-                kernel_size=1,
-                padding=0,
-            ),
+        
+        # self.network_pred = nn.Sequential(
+        #     nn.Conv2d(C, C, kernel_size=3, padding=1),
+        #     nn.ReLU(inplace=True),
+        #     nn.Conv2d(C, C, kernel_size=3, padding=1)
+        # )
+
+        self.prediction_head = nn.Sequential(
+            nn.AdaptiveAvgPool2d((1, 1)),       # [B, C, H, W] -> [B, C, 1, 1]
+            nn.Flatten(start_dim=1),            # [B, C, 1, 1] -> [B, C]
+            nn.Linear(C, C),
             nn.ReLU(inplace=True),
-            nn.Conv2d(
-                pred_size,
-                pred_size,
-                kernel_size=1,
-                padding=0,
-            ),
+            nn.Linear(C, C)
         )
     def init_transformer(self, input_dim=4, embed_dim=128, depth=6, heads=4):
         self.embedding = nn.Linear(input_dim, embed_dim)
@@ -103,14 +101,14 @@ class BestOfBothWorld(nn.Module):
 
         # Token embedding + positional encoding
         # Token embedding + positional encoding
-        x_base = self.embedding(events)  # [B, N, D]
+        
 
         # Sinusoidal temporal encoding
-        t_norm = (events[:,:, 0] * 9999).long().clamp(0, 9999)  # scale time to [0, 9999]
-        pos_time = self.temporal_pe[:, t_norm].squeeze(0)  # [1, B, N, D] -> [B, N, D]
-
-        pos_xy = self.spatial_pe(events[:, :, 1:3])  # [B, N, D]
-        x = x_base + pos_time + pos_xy  # [B, N, D]
+        times = events[:, :, 0]  # [B, N]
+        ## scale to [0, 1]
+        times = (times - times.min()) / (times.max() - times.min() + 1e-6)
+        events[:, :, 0] = times
+        x = self.embedding(events)  # [B, N, D]
         
         # Transformer over tokens
         x = self.transformer(x, src_key_padding_mask=~mask)  # [B, N, D]
@@ -141,8 +139,8 @@ class BestOfBothWorld(nn.Module):
         x = torch.cat([transformer_encoder, CNN_encoder], dim=1)
 
         if "LSTM" in self.model_type:
-            x = self.convlstm(x)
+            encoding= self.convlstm(x)
         # Decode to full self.resolution depth map
-        prediction = self.network_pred(x)   
-        return x, prediction
+        prediction = self.prediction_head(x) 
+        return encoding, prediction
 
