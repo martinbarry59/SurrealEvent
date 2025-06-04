@@ -69,15 +69,15 @@ def postprocess(batch):
     batch = (batch + 1) / 2
     batch = torch.nn.functional.interpolate(batch, size=(260, 346), mode='bilinear', align_corners=False)
     return batch
-def get_score(predictions, GT, mask = True):
+def get_score(predictions, GT):
     if predictions.dim() == 5:
         T1, B, C, H, W = predictions.shape
         predictions = predictions.view(T1*B, C * H * W)
         T2, B, C, H, W = GT.shape
         GT = GT.view(T2*B, C * H * W).transpose(0, 1)
     else:
-        T1, B, C = predictions.shape[:3]
-        T2, B, C = GT.shape[:3]
+        T1, B, C = predictions.shape
+        T2, B, C = GT.shape
         predictions = predictions.view(T1*B, C)
         GT = GT.view(T2*B, C).transpose(0, 1)
     pred_norm = torch.nn.functional.normalize(predictions, dim=1)
@@ -86,13 +86,13 @@ def get_score(predictions, GT, mask = True):
 
     return score
 def compute_CPC_loss(predictions, GT, criterion, mask = True):
-    if predictions.dim() != 5:
+    if predictions.dim() == 5:
         T1, B1, C, H, W = predictions.shape
         T2, B2, C, H, W = GT.shape
     else:
-        T1, B1, C = predictions.shape[:5]
-        T2, B2, C = GT.shape[:5]
-    score = get_score(predictions, GT, mask)
+        T1, B1, C = predictions.shape
+        T2, B2, C = GT.shape
+    score = get_score(predictions, GT)
     mask_ = (
                     torch.zeros((T1, B1, T2, B2), dtype=torch.int8, requires_grad=False)
                     .detach()

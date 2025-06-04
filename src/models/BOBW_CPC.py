@@ -37,10 +37,10 @@ class BestOfBothWorld(nn.Module):
         #     nn.ReLU(inplace=True),
         #     nn.Conv2d(C, C, kernel_size=3, padding=1)
         # )
-
-        self.prediction_head = nn.Sequential(
-            nn.AdaptiveAvgPool2d((1, 1)),       # [B, C, H, W] -> [B, C, 1, 1]
+        self.final_encoder = nn.Sequential(
             nn.Flatten(start_dim=1),            # [B, C, 1, 1] -> [B, C]
+            nn.Linear(C * 9 * 11, C))
+        self.prediction_head = nn.Sequential(
             nn.Linear(C, C),
             nn.ReLU(inplace=True),
             nn.Linear(C, C)
@@ -102,14 +102,15 @@ class BestOfBothWorld(nn.Module):
         # Token embedding + positional encoding
         # Token embedding + positional encoding
         
-
-        # Sinusoidal temporal encoding
-        times = events[:, :, 0]  # [B, N]
-        ## scale to [0, 1]
-        times = (times - times.min()) / (times.max() - times.min() + 1e-6)
-        events[:, :, 0] = times
-        x = self.embedding(events)  # [B, N, D]
-        
+        with torch.no_grad():
+            t_min = events[:, :, 0].min(dim=1, keepdim=True)[0]
+            t_max = events[:, :, 0].max(dim=1, keepdim=True)[0]
+            times = (events[:, :, 0] - t_min) / (t_max - t_min + 1e-6)
+            events[:, :, 0] = times
+            t_idx = (times * (self.temporal_pe.shape[1] - 1)).long().clamp(0, self.temporal_pe.shape[1] - 1)  # [B, N]
+            temporal_encoding = self.temporal_pe[0, t_idx]  # [B, N, D]
+        spatial_pe = self.spatial_pe(events[:, :, 1:3])
+        x = self.embedding(events) + temporal_encoding + spatial_pe
         # Transformer over tokens
         x = self.transformer(x, src_key_padding_mask=~mask)  # [B, N, D]
         # Attention pooling
@@ -139,8 +140,9 @@ class BestOfBothWorld(nn.Module):
         x = torch.cat([transformer_encoder, CNN_encoder], dim=1)
 
         if "LSTM" in self.model_type:
-            encoding= self.convlstm(x)
+            x = self.convlstm(x)
+        encoding = self.final_encoder(x)
         # Decode to full self.resolution depth map
-        prediction = self.prediction_head(x) 
+        prediction = self.prediction_head(encoding) 
         return encoding, prediction
 
