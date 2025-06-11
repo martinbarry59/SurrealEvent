@@ -97,7 +97,6 @@ def compute_CPC_loss(predictions, GT, criterion, mask = True):
                     .detach()
                 )
     if mask:
-        
         mask_[
             torch.arange(T1, device=mask_.device),
             torch.arange(B1, device=mask_.device)[:, None],
@@ -210,8 +209,8 @@ def sequence_for_LSTM(data, model, criterion, optimizer, train = True, scaler = 
             seq_events.append(events)
             seq_masks.append(mask)
         predictions, encodings = model(seq_events, seq_masks)
-        predictions = predictions.permute(1,0,2)[:-1]
-        encodings = encodings.permute(1,0,2)[1:]
+        predictions = predictions.permute(1,0,2).contiguous()[:-1]
+        encodings = encodings.permute(1,0,2).contiguous()[1:]
         
         target, score = compute_CPC_loss(predictions, encodings, criterion)
         target = target.argmax(dim=1)
@@ -231,7 +230,7 @@ def sequence_for_LSTM(data, model, criterion, optimizer, train = True, scaler = 
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             scaler.step(optimizer)
             scaler.update()
-        break
+        
     return loss_avg, top1_avg, top3_avg, top5_avg
 def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, save_path=None):
     model.train() if train else model.eval()
@@ -272,7 +271,7 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
 
 def main():
     batch_size = 28
-    network = "BOBWLSTM_CPC" # LSTM, Transformer, BOBWFF, BOBWLSTM
+    network = "Transformer" # LSTM, Transformer, BOBWFF, BOBWLSTM
     
 
     loading_method = CNN_collate if (not ((network =="Transformer") or ("BOBW" in network))) else Transformer_collate
