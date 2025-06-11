@@ -14,10 +14,8 @@ fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # or use 'XVID' for .avi
 from torch.amp import autocast
 import torch.nn.functional as F
 import shutil
-import lpips
 import torchvision.transforms as T
-from cProfile import Profile
-from pstats import SortKey, Stats
+
 def plot_attention_map(attn_weights, events, b, q, img):
     query_attention = attn_weights[b, q]  # shape: [N]
     coords = events[b, :, 1:3].cpu().numpy()  # normalized x, y
@@ -82,9 +80,9 @@ def get_score(predictions, GT):
         GT = GT.view(T2*B, C).transpose(0, 1)
     pred_norm = torch.nn.functional.normalize(predictions, dim=1)
     GT_norm = torch.nn.functional.normalize(GT, dim=1)
-    score = torch.matmul(pred_norm, GT_norm).view(T1,B,T2, B)
-
-    return score
+    
+    score = torch.matmul(pred_norm, GT_norm) / 0.1
+    return score.view(T1,B,T2, B)
 def compute_CPC_loss(predictions, GT, criterion, mask = True):
     if predictions.dim() == 5:
         T1, B1, C, H, W = predictions.shape
@@ -93,6 +91,7 @@ def compute_CPC_loss(predictions, GT, criterion, mask = True):
         T1, B1, C = predictions.shape
         T2, B2, C = GT.shape
     score = get_score(predictions, GT)
+    
     mask_ = (
                     torch.zeros((T1, B1, T2, B2), dtype=torch.int8, requires_grad=False)
                     .detach()
@@ -140,7 +139,7 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
             # video_writer = cv2.VideoWriter(writer_path, fourcc, 30, (n_images*346,260)) if (not train or batch_step % 10==0 and save_path) else None
             loss = 0
             training_steps = 300
-            block_update = 2
+            block_update = 20
             step_size =  torch.randint(1, 10, (1,)).item()
             N_update = int(training_steps / block_update)
             t_start = random.randint(10, len_videos - N_update * block_update)
@@ -149,7 +148,7 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
             
             predictions = []
             GT = []
-            
+            TMP_OLD_GT = []
             for t in range(1,len_videos - step_size, step_size):
                 events, depth, mask = get_data(data, t)
                 kerneled = None
@@ -169,16 +168,18 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
                         if training_step % block_update == 0:
                             predictions = torch.stack(predictions[0:-1], dim=0)
                             ground_truths = torch.stack(GT[1:], dim=0)
-                            target, score = compute_CPC_loss(predictions, ground_truths, criterion)
-                            if len(OLD_GT) > 0:
-                                old_ground_truths = torch.stack(OLD_GT, dim=0)  
-                                target_old, score_old= compute_CPC_loss(predictions, old_ground_truths, criterion, False)
-                                
-                                target = torch.cat((target, target_old), dim=1)
-                                
-                                score = torch.cat((score, score_old), dim=1)
-                            target = target.argmax(dim=1)
-                            loss = criterion(score, target)
+                            with torch.cuda.amp.autocast(enabled=False):
+                                target, score = compute_CPC_loss(predictions, ground_truths, criterion)
+                                score /= model.temperature
+                                # if len(OLD_GT) > 0:
+                                #     old_ground_truths = torch.stack(OLD_GT, dim=0)  
+                                #     target_old, score_old= compute_CPC_loss(predictions, old_ground_truths, criterion, False)
+                                    
+                                #     target = torch.cat((target, target_old), dim=1)
+                                    
+                                #     score = torch.cat((score, score_old), dim=1)
+                                target = target.argmax(dim=1)
+                                loss = criterion(score, target)
                             top1, top3, top5 = calc_topk_accuracy(score, target, (1, 3, 5))
                             loss_avg.append(loss.item())
                             top1_avg.append(top1.item())
@@ -190,15 +191,23 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
                                 scaler.scale(loss).backward()
                                 scaler.unscale_(optimizer)
                                 # torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
+                                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                                 scaler.step(optimizer)
                                 scaler.update()
                             predictions = []
-                            OLD_GT.extend(GT)
+                            TMP_OLD_GT.extend(GT)
                             GT = []
                             training_step = 0
                             if model.model_type != "Transformer":
                                 model.detach_states()
                             loss = 0
+                            # total_norm = 0
+                            # for p in model.parameters():
+                            #     if p.grad is not None:
+                            #         param_norm = p.grad.data.norm(2)
+                            #         total_norm += param_norm.item() ** 2
+                            # total_norm = total_norm ** 0.5
+                            # print(f"Grad norm: {total_norm}")
                 # with torch.no_grad():
                     
                     # if video_writer:
@@ -219,6 +228,10 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
                     break
                 del  encoding, depth, events, kerneled
             ## shuffle old_gt
+            
+            if len(TMP_OLD_GT) > 0:
+                OLD_GT.extend(TMP_OLD_GT)
+            del TMP_OLD_GT
             random.shuffle(OLD_GT)
             OLD_GT = OLD_GT[:100]
             epoch_loss.append(sum(loss_avg)/len(loss_avg))
@@ -239,7 +252,7 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
     return sum(epoch_loss)/len(epoch_loss)
 
 def main():
-    batch_size = 3
+    batch_size = 28
     network = "BOBWLSTM_CPC" # LSTM, Transformer, BOBWFF, BOBWLSTM
     
 
@@ -263,7 +276,7 @@ def main():
     # else:
     #     model = UNetMobileNetSurreal(in_channels = 2, out_channels = 1, net_type = network , method = method) ## if no LSTM use there we give previous output as input
     if checkpoint_path:
-        checkpoint_file = f'{checkpoint_path}/model_epoch_14_{model.model_type}_{model.method}.pth'
+        checkpoint_file = f'{checkpoint_path}/model_epoch_7_{model.model_type}_{model.method}.pth'
         
         print(f"Loading checkpoint from {checkpoint_file}")
         try:
@@ -277,9 +290,9 @@ def main():
     # criterion = lpips.LPIPS(net='alex')
     criterion = torch.nn.CrossEntropyLoss()
     criterion.to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)
 
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=20, eta_min=1e-6)  # 10 = total number of epochs
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10, eta_min=1e-6)  # 10 = total number of epochs
 
     min_loss = float('inf')
     for epoch in range(100):

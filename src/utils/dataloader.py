@@ -46,8 +46,6 @@ class EventDepthDataset(Dataset):
     def __init__(self, h5_dir):
         super().__init__()
         self.events_files = glob.glob(os.path.join(h5_dir, "**/*dvs.h5"), recursive = True)
-        print(h5_dir)
-        print(len(self.events_files))
         self.depth_files = [f.replace("dvs.h5", "vid_slomo_depth.h5") for f in self.events_files]
     def test_corruption(self):
         for i in tqdm.tqdm(range(len(self.events_files))):
@@ -150,7 +148,7 @@ def CNN_collate(batch):
         frame_n = (torch.floor(times / step)-1).long()
         event_frames[batch_n, frame_n, polarities , y, x] = 1
     depths = torch.stack(depths).permute((1,0,2,3))  # [B, T, H, W]
-    event_frames = event_frames.permute(1,0, 2, 3, 4)
+    event_frames = event_frames.permute(1, 0, 2, 3, 4)
     event_frames, depths = apply_augmentations(event_frames, depths)
     return [event_frames, depths]
 if __name__ == "__main__":
