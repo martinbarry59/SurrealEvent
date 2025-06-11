@@ -93,9 +93,8 @@ def compute_CPC_loss(predictions, GT, criterion, mask = True):
     score = get_score(predictions, GT)
     
     mask_ = (
-                    torch.zeros((T1, B1, T2, B2), dtype=torch.int8, requires_grad=False)
+                    torch.zeros((T1, B1, T2, B2), dtype=torch.int8, requires_grad=False, device=score.device)
                     .detach()
-                    .cuda()
                 )
     if mask:
         
@@ -112,6 +111,128 @@ def compute_CPC_loss(predictions, GT, criterion, mask = True):
 
     
     return target_flattened, score_flattened
+def regular_steps(data, model, optimizer, criterion, train=True, scaler = None):
+    len_videos = 1188
+    loss = 0
+    training_steps = 300
+    block_update = 50
+    step_size =  torch.randint(1, 10, (1,)).item()
+    N_update = int(training_steps / block_update)
+    t_start = random.randint(10, len_videos - N_update * block_update)
+    t_end = t_start + N_update * block_update
+    training_step = 0
+    
+    predictions = []
+    GT = []
+    TMP_OLD_GT = []
+    loss_avg = []
+    top1_avg, top3_avg, top5_avg = [], [], []
+    for t in range(1,len_videos - step_size, step_size):
+        events, depth, mask = get_data(data, t)
+        kerneled = None
+        
+        with autocast(device_type=device.type):
+            if t < t_start:
+                with torch.no_grad():
+                    encoding, pred = model(events, mask)
+            else:
+                optimizer.zero_grad()
+                encoding, pred = model(events, mask)
+
+            if t >= t_start:
+                training_step += 1
+                predictions.append(pred)
+                GT.append(encoding.detach().clone())
+                if training_step % block_update == 0:
+                    predictions = torch.stack(predictions[0:-1], dim=0)
+                    print(f"Predictions shape: {predictions.shape}")
+                    ground_truths = torch.stack(GT[1:], dim=0)
+                    # with torch.cuda.amp.autocast(enabled=False):
+                    target, score = compute_CPC_loss(predictions, ground_truths, criterion)
+                    score /= 0.07
+                    # if len(OLD_GT) > 0:
+                    #     old_ground_truths = torch.stack(OLD_GT, dim=0)  
+                    #     target_old, score_old= compute_CPC_loss(predictions, old_ground_truths, criterion, False)
+                        
+                    #     target = torch.cat((target, target_old), dim=1)
+                        
+                    #     score = torch.cat((score, score_old), dim=1)
+                    target = target.argmax(dim=1)
+                    loss = criterion(score, target)
+                    top1, top3, top5 = calc_topk_accuracy(score, target, (1, 3, 5))
+                    loss_avg.append(loss.item())
+                    top1_avg.append(top1.item())
+                    top3_avg.append(top3.item())
+                    top5_avg.append(top5.item())
+                    del score, target
+                    if train:
+
+                        scaler.scale(loss).backward()
+                        scaler.unscale_(optimizer)
+                        # torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                        scaler.step(optimizer)
+                        scaler.update()
+                    predictions = []
+                    TMP_OLD_GT.extend(GT)
+                    GT = []
+                    training_step = 0
+                    
+                    loss = 0
+                    
+        if t >= t_end -1:
+            # with torch.no_grad():
+            #     if video_writer:
+            #         for q in range(attn_weights.shape[1]):
+            #             plot_attention_map(attn_weights, events, 0, q, depth[0])
+            break
+        del  encoding, depth, events, kerneled
+        return loss_avg, top1_avg, top3_avg, top5_avg, TMP_OLD_GT
+def sequence_for_LSTM(data, model, criterion, optimizer, train = True, scaler = None):
+    len_videos = 1188
+    training_steps = 300
+    block_update = 8
+    step_size =  torch.randint(1, 10, (1,)).item()
+    N_update = int(training_steps / block_update)
+    t_start = random.randint(10, len_videos - N_update * block_update)
+    t_end = t_start + N_update * block_update
+    
+    loss_avg = []
+    top1_avg, top3_avg, top5_avg = [], [], []
+    for n in range(N_update):
+        seq_events = []
+        seq_masks = []
+        start_seq = t_start + n * block_update * step_size
+        if start_seq >= t_end -1:
+            break
+        for t in range(start_seq, start_seq + block_update * step_size, step_size):
+            events, _, mask = get_data(data, t)
+            seq_events.append(events)
+            seq_masks.append(mask)
+        predictions, encodings = model(seq_events, seq_masks)
+        predictions = predictions.permute(1,0,2)[:-1]
+        encodings = encodings.permute(1,0,2)[1:]
+        
+        target, score = compute_CPC_loss(predictions, encodings, criterion)
+        target = target.argmax(dim=1)
+        score /= 0.07
+        loss = criterion(score, target)
+        top1, top3, top5 = calc_topk_accuracy(score, target, (1, 3, 5))
+        loss_avg.append(loss.item())
+        top1_avg.append(top1.item())
+        top3_avg.append(top3.item())
+        top5_avg.append(top5.item())
+        del score, target
+        if train:
+
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
+            # torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            scaler.step(optimizer)
+            scaler.update()
+        break
+    return loss_avg, top1_avg, top3_avg, top5_avg
 def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, save_path=None):
     model.train() if train else model.eval()
     scaler = torch.amp.GradScaler(device=device)
@@ -124,125 +245,23 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
         top1_epoch, top3_epoch, top5_epoch = [], [], []
         OLD_GT = []
         for batch_step, data in enumerate(loader):
-            if batch_step == len(loader)-1:
-                break   
-            len_videos = 1188
+            # if batch_step == len(loader)-1:
+            #     break   
             
-            loss_avg = []
-            top1_avg, top3_avg, top5_avg = [], [], []
-            writer_path = f'{save_path}/{tqdm_str}_EPOCH_{epoch}_video_{batch_step}.mp4' if save_path else None
-            if save_path and not os.path.exists(writer_path):
-                os.makedirs(os.path.dirname(writer_path), exist_ok=True)
+            # loss_avg, top1_avg, top3_avg, top5_avg, TMP_OLD_GT = regular_steps(data, model, optimizer, criterion, train=train, scaler=scaler)
+            loss_avg, top1_avg, top3_avg, top5_avg = sequence_for_LSTM(data, model, criterion, optimizer, train, scaler)
 
-
-            n_images = 5 if len(data) == 2 else 3
-            # video_writer = cv2.VideoWriter(writer_path, fourcc, 30, (n_images*346,260)) if (not train or batch_step % 10==0 and save_path) else None
-            loss = 0
-            training_steps = 300
-            block_update = 20
-            step_size =  torch.randint(1, 10, (1,)).item()
-            N_update = int(training_steps / block_update)
-            t_start = random.randint(10, len_videos - N_update * block_update)
-            t_end = t_start + N_update * block_update
-            training_step = 0
-            
-            predictions = []
-            GT = []
-            TMP_OLD_GT = []
-            for t in range(1,len_videos - step_size, step_size):
-                events, depth, mask = get_data(data, t)
-                kerneled = None
-                
-                with autocast(device_type="cuda"):
-                    if t < t_start:
-                        with torch.no_grad():
-                            encoding, pred = model(events, mask)
-                    else:
-                        optimizer.zero_grad()
-                        encoding, pred = model(events, mask)
-
-                    if t >= t_start:
-                        training_step += 1
-                        predictions.append(pred)
-                        GT.append(encoding.detach().clone())
-                        if training_step % block_update == 0:
-                            predictions = torch.stack(predictions[0:-1], dim=0)
-                            ground_truths = torch.stack(GT[1:], dim=0)
-                            with torch.cuda.amp.autocast(enabled=False):
-                                target, score = compute_CPC_loss(predictions, ground_truths, criterion)
-                                score /= model.temperature
-                                # if len(OLD_GT) > 0:
-                                #     old_ground_truths = torch.stack(OLD_GT, dim=0)  
-                                #     target_old, score_old= compute_CPC_loss(predictions, old_ground_truths, criterion, False)
-                                    
-                                #     target = torch.cat((target, target_old), dim=1)
-                                    
-                                #     score = torch.cat((score, score_old), dim=1)
-                                target = target.argmax(dim=1)
-                                loss = criterion(score, target)
-                            top1, top3, top5 = calc_topk_accuracy(score, target, (1, 3, 5))
-                            loss_avg.append(loss.item())
-                            top1_avg.append(top1.item())
-                            top3_avg.append(top3.item())
-                            top5_avg.append(top5.item())
-                            del score, target
-                            if train:
-
-                                scaler.scale(loss).backward()
-                                scaler.unscale_(optimizer)
-                                # torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
-                                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-                                scaler.step(optimizer)
-                                scaler.update()
-                            predictions = []
-                            TMP_OLD_GT.extend(GT)
-                            GT = []
-                            training_step = 0
-                            if model.model_type != "Transformer":
-                                model.detach_states()
-                            loss = 0
-                            # total_norm = 0
-                            # for p in model.parameters():
-                            #     if p.grad is not None:
-                            #         param_norm = p.grad.data.norm(2)
-                            #         total_norm += param_norm.item() ** 2
-                            # total_norm = total_norm ** 0.5
-                            # print(f"Grad norm: {total_norm}")
-                # with torch.no_grad():
-                    
-                    # if video_writer:
-                        
-                    #     if kerneled is not None:
-                    #         kerneled = kerneled-kerneled.min() 
-                    #         kerneled = kerneled/(kerneled.max()+1e-6)
-                    #         images_to_write = [events, kerneled[0,0], kerneled[0,1], depth[0], outputs[0,0].squeeze(0)]
-                    #     else:
-                    #         images_to_write = [events, depth[0], outputs[0,0].squeeze(0)]
-                    #     add_frame_to_video(video_writer, images_to_write)
-                
-                if t >= t_end -1:
-                    # with torch.no_grad():
-                    #     if video_writer:
-                    #         for q in range(attn_weights.shape[1]):
-                    #             plot_attention_map(attn_weights, events, 0, q, depth[0])
-                    break
-                del  encoding, depth, events, kerneled
-            ## shuffle old_gt
-            
-            if len(TMP_OLD_GT) > 0:
-                OLD_GT.extend(TMP_OLD_GT)
-            del TMP_OLD_GT
-            random.shuffle(OLD_GT)
-            OLD_GT = OLD_GT[:100]
             epoch_loss.append(sum(loss_avg)/len(loss_avg))
             top1_epoch.append(sum(top1_avg)/len(top1_avg))
             top3_epoch.append(sum(top3_avg)/len(top3_avg))
             top5_epoch.append(sum(top5_avg)/len(top5_avg))
             string_value = f"Epoch {epoch}, Batch {batch_step} / {len(loader)}, Loss: {epoch_loss[-1]}, Top1: {top1_epoch[-1]}, Top3: {top3_epoch[-1]}, Top5: {top5_epoch[-1]}, LR: {optimizer.param_groups[0]['lr']}"
+            print(epoch_loss)
             with open(error_file, "a") as f:
                 f.write(string_value+"\n")
-            # video_writer.release() if video_writer else None   
-            if model.model_type != "Transformer":
+            # video_writer.release() if video_writer else None  
+            print(model.model_type) 
+            if "Trans" not in model.model_type:
                 model.reset_states()            
             batch_tqdm.update(1)
             batch_tqdm.set_postfix({"loss": epoch_loss[-1], "top1": top1_epoch[-1], "top3": top3_epoch[-1], "top5": top5_epoch[-1]})
@@ -276,7 +295,8 @@ def main():
     # else:
     #     model = UNetMobileNetSurreal(in_channels = 2, out_channels = 1, net_type = network , method = method) ## if no LSTM use there we give previous output as input
     if checkpoint_path:
-        checkpoint_file = f'{checkpoint_path}/model_epoch_7_{model.model_type}_{model.method}.pth'
+
+        checkpoint_file = f'{checkpoint_path}/model_epoch_7_{model.model_type}.pth'
         
         print(f"Loading checkpoint from {checkpoint_file}")
         try:
@@ -303,8 +323,8 @@ def main():
             best = "False"
             if test_loss < min_loss:
                 min_loss = test_loss
-                torch.save(model.state_dict(), f'{checkpoint_path}/model_epoch_{epoch}_{model.model_type}_{model.method}_best.pth')
-            torch.save(model.state_dict(), f'{checkpoint_path}/model_epoch_{epoch}_{model.model_type}_{model.method}.pth')
+                torch.save(model.state_dict(), f'{checkpoint_path}/model_epoch_{epoch}_{model.model_type}_best.pth')
+            torch.save(model.state_dict(), f'{checkpoint_path}/model_epoch_{epoch}_{model.model_type}.pth')
 
             ## divide by 10 the lr at each epocj
 

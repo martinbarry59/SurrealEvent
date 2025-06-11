@@ -113,6 +113,7 @@ class BestOfBothWorld(nn.Module):
             # print("times",torch.min(times), torch.max(times), torch.min(temporal_encoding), torch.max(temporal_encoding))
         spatial_pe = self.spatial_pe(events[:, :, 1:3])
         x = self.embedding(events) + temporal_encoding + spatial_pe
+
         # print("x", torch.min(x), torch.max(x))
         # Transformer over tokens
         x = self.transformer(x, src_key_padding_mask=~mask)  # [B, N, D]

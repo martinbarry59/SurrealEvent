@@ -5,6 +5,8 @@
 from __future__ import print_function
 import os
 
+import matplotlib.pyplot as plt
+
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 ## add parent folder to path
 from models.MobileNetSurreal import UNetMobileNetSurreal
@@ -49,9 +51,9 @@ def compute_CPC_loss(predictions, GT, criterion, mask = True):
     score = get_score(predictions, GT)
     
     mask_ = (
-                    torch.zeros((T1, B1, T2, B2), dtype=torch.int8, requires_grad=False)
-                    .detach()
-                    .cuda()
+
+                    torch.zeros((T1, B1, T2, B2), dtype=torch.int8, requires_grad=False, device = predictions.device)
+                    .detach()               
                 )
     if mask:
         
@@ -64,7 +66,8 @@ def compute_CPC_loss(predictions, GT, criterion, mask = True):
     target_, (B1, T1, B2, T2) = process_output(mask_)
     score_flattened = score.view(B1 * T1, B2 * T2)
     target_flattened = target_.contiguous().view(B1 * T1, B2 * T2)
-    
+
+    return target_flattened, score_flattened
 def get_data(data, t):
     if len(data) == 2:
         events_videos, depths = data
@@ -78,12 +81,15 @@ def get_data(data, t):
     else:
         raise ValueError("Data must be a tuple of length 2 or 3")
 def main():
-    batch_size = 28
+
+    batch_size = 5
     network = "BOBWLSTM_CPC" # LSTM, Transformer, BOBWFF, BOBWLSTM
     
 
     loading_method = CNN_collate if (not ((network =="Transformer") or ("BOBW" in network))) else Transformer_collate
     train_dataset = EventDepthDataset(data_path+"/train/")
+
+    print(data_path+"/train/")
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=loading_method)
    
     # Load the model UNetMobileNetSurreal
@@ -99,12 +105,13 @@ def main():
     # else:
     #     model = UNetMobileNetSurreal(in_channels = 2, out_channels = 1, net_type = network , method = method) ## if no LSTM use there we give previous output as input
     if checkpoint_path:
-        checkpoint_file = f'{checkpoint_path}/model_epoch_7_{model.model_type}_{model.method}.pth'
+
+        checkpoint_file = f'{checkpoint_path}model_best.pth'
         
         print(f"Loading checkpoint from {checkpoint_file}")
+        
         try:
-            model.load_state_dict(torch.load(checkpoint_file))
-            epoch_checkpoint = int(checkpoint_file.split("_")[2]) + 1
+            model.load_state_dict(torch.load(checkpoint_file,map_location=torch.device('cpu')))
         except:
             print("Checkpoint not found, starting from scratch")
     model.to(device)
@@ -125,25 +132,6 @@ def process_output(mask):
     return target, (B1, T1, B2, T2)
 
 
-# def re_order_labels(labels):
-#     ## sort and keep index
-#     ## get unique labels
-#     unique_labels = torch.unique(labels)
-
-#     ## get the number of unique labels
-#     num_labels = unique_labels.size(0)
-#     ## create a new label list
-#     new_labels = torch.zeros_like(labels)
-#     ## loop through the unique labels
-#     for i in range(num_labels):
-#         ## get the index of the unique label
-#         idx_label = labels == unique_labels[i]
-#         ## assign new labels
-#         new_labels[idx_label] = i
-#     return new_labels, unique_labels
-
-
-
 def epoch_step(loader, model, criterion):
     tqdm_str = ""
     batch_tqdm = tqdm.tqdm(total=len(loader), desc=f"Batch {tqdm_str}" , position=0, leave=True)
@@ -151,8 +139,7 @@ def epoch_step(loader, model, criterion):
     epoch_loss = []
     top1_epoch, top3_epoch, top5_epoch = [], [], []
     for batch_step, data in enumerate(loader):
-        if batch_step == len(loader)-1:
-            break   
+
         len_videos = 1188
         
         loss_avg = []
@@ -168,6 +155,8 @@ def epoch_step(loader, model, criterion):
         
         predictions = []
         GT = []
+
+        out = []
         labels = []
         for t in range(1,len_videos -1 ):
             events, depth, mask = get_data(data, t)
@@ -175,34 +164,39 @@ def epoch_step(loader, model, criterion):
             
             with autocast(device_type="cuda"):
                 encoding, pred = model(events, mask)
-                training_step += 1
+
+                
                 predictions.append(pred)
                 GT.append(encoding.detach().clone())
-                labels.append(torch.arange(encoding.shape[0], device=device))
-                predictions = torch.stack(predictions[0:-1], dim=0)
-                ground_truths = torch.stack(GT[1:], dim=0)
-                with torch.cuda.amp.autocast(enabled=False):
-                    target, score = compute_CPC_loss(predictions, ground_truths, criterion)
-                    score /= model.temperature
-                    
-                    target = target.argmax(dim=1)
-                    if criterion:
-                        loss = criterion(score, target)
-                top1, top3, top5 = calc_topk_accuracy(score, target, (1, 3, 5))
-                loss_avg.append(loss.item())
-                top1_avg.append(top1.item())
-                top3_avg.append(top3.item())
-                top5_avg.append(top5.item())
-                del score, target
-                predictions = []
-                
-                training_step = 0
-                if model.model_type != "Transformer":
-                    model.detach_states()
-                loss = 0
+                out.append(encoding.unsqueeze(0).detach().clone())
+                labels.append(t * torch.ones(encoding.shape[0], device=device)%20)
 
-            del  encoding, depth, events, kerneled
-            break
+                if t > 30:
+                    break
+        predictions = torch.stack(predictions[0:-1], dim=0)
+        ground_truths = torch.stack(GT[1:], dim=0)
+        with torch.cuda.amp.autocast(enabled=False):
+            print(predictions.shape, ground_truths.shape)
+            target, score = compute_CPC_loss(predictions, ground_truths, criterion)
+            score /= model.temperature
+            
+            target = target.argmax(dim=1)
+            if criterion:
+                loss = criterion(score, target)
+        top1, top3, top5 = calc_topk_accuracy(score, target, (1, 3, 5))
+        loss_avg.append(loss)
+        top1_avg.append(top1.item())
+        top3_avg.append(top3.item())
+        top5_avg.append(top5.item())
+        del score, target
+        predictions = []
+                
+        if model.model_type != "Transformer":
+            model.detach_states()
+        loss = 0
+
+        del  encoding, depth, events, kerneled
+        
         ## shuffle old_gt
         
         
@@ -210,7 +204,8 @@ def epoch_step(loader, model, criterion):
         top1_epoch.append(sum(top1_avg)/len(top1_avg))
         top3_epoch.append(sum(top3_avg)/len(top3_avg))
         top5_epoch.append(sum(top5_avg)/len(top5_avg))
-        string_value = f"Batch {batch_step} / {len(loader)}, Loss: {epoch_loss[-1]}, Top1: {top1_epoch[-1]}, Top3: {top3_epoch[-1]}, Top5: {top5_epoch[-1]}, LR: {optimizer.param_groups[0]['lr']}"
+
+        string_value = f"Batch {batch_step} / {len(loader)}, Loss: {epoch_loss[-1]}, Top1: {top1_epoch[-1]}, Top3: {top3_epoch[-1]}, Top5: {top5_epoch[-1]}"
         print(string_value)
         # video_writer.release() if video_writer else None   
         if model.model_type != "Transformer":
@@ -220,21 +215,23 @@ def epoch_step(loader, model, criterion):
            
     # stats.dump_stats("profiling_results.prof")
         batch_tqdm.close()
-    return GT, labels
+
+    return out, labels
 
                 
 def plotly_TSNE(tsne, labels, video_label, name):
     ## nice plotly with labels on hover
     fig = plotly.graph_objs.Figure()
-    for i in range(10):
+
+    for i in range(min(10, len(video_label))):
         idx = labels == i
         fig.add_trace(
             plotly.graph_objs.Scatter(
                 x=tsne[idx, :][:, 0],
                 y=tsne[idx, :][:, 1],
                 mode="markers",
-                name=video_label[i],
-                text=[str(video_label[i])] * tsne[idx, :][:, 0].shape[0],
+                name=str(video_label[i].item()),
+                text=[str(video_label[i].item())] * tsne[idx, :][:, 0].shape[0],
                 hoverinfo="text",
             )
         )
@@ -247,7 +244,22 @@ def plotly_TSNE(tsne, labels, video_label, name):
 def run_TSNE(data_loader, model):
     with torch.no_grad():
         seqs, labs = epoch_step(data_loader, model, None)
-    all_seq = torch.cat(seqs)
+
+    all_seq = torch.cat(seqs).permute(1, 0, 2).contiguous()  # [B, T, C] -> [T, B, C]
+    print(all_seq.shape, all_seq.shape)
+    print(all_seq[0,0:20,0])
+    all_seq = all_seq.view(-1, all_seq.shape[-1])  # Flatten the sequences
+    print(all_seq[0:20,0])
+    with torch.no_grad():
+        sims = torch.matmul(all_seq, all_seq.T)
+        ##  argsort the sims matrix per row
+        indices = torch.argsort(sims, dim=1, descending=True)
+
+        plt.imshow(sims, cmap='viridis')
+        plt.title("Cosine Similarity of Encodings")
+        plt.colorbar()
+        plt.show()
+    exit()
     all_labels = torch.cat(labs)
     unique_label = torch.unique(all_labels)
     tsne = TSNE(n_components=2, verbose=0, perplexity=50, max_iter=2000).fit_transform(
