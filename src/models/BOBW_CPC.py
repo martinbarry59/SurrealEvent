@@ -107,6 +107,7 @@ class BestOfBothWorld(nn.Module):
             t_max = events[:, :, 0].max(dim=1, keepdim=True)[0]
             times = (events[:, :, 0] - t_min) / (t_max - t_min + 1e-6)
             
+
             events[:, :, 0] = times
             t_idx = (times * (self.temporal_pe.shape[1] - 1)).long().clamp(0, self.temporal_pe.shape[1] - 1)  # [B, N]
             temporal_encoding = self.temporal_pe[0, t_idx]  # [B, N, D]

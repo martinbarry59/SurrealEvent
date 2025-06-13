@@ -75,22 +75,6 @@ class EventDepthDataset(Dataset):
         events[:, 1] = events[:, 1] / 346
         events[:, 2] = events[:, 2] / 260
         return events, depth
-        ## repeat events for each time step
-        # binned = events[:, 0] / (1/(30*12))
-        # binned = torch.floor(binned).long()
-        # max_events = 1000
-        # event_list = torch.zeros(depth.shape[0], max_events, 4)
-        # active_mask = torch.zeros(depth.shape[0], max_events, dtype=torch.bool)
-        # active_mask[:, 0] = 1
-        # for time in range(depth.shape[0]):
-        #     bin_idx = torch.argmax(1*(binned > time))
-            
-        #     min_idx = max(bin_idx - max_events,0)
-        #     tmp = events[min_idx:bin_idx, :]
-        #     event_list[time,:min(bin_idx,max_events)] = tmp
-        #     active_mask[time, :min(bin_idx,max_events)] = 1
-        # return event_list, remove_border(depth) / 255, active_mask
-
 
 def sampling_events(t_old, t_new, events, old_events):
     max_events = 1000

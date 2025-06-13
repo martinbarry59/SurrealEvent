@@ -4,11 +4,12 @@ import torch.nn.functional as F
 
 import math
 class EventTransformer(nn.Module):
-    def __init__(self, input_dim=4, embed_dim=128, depth=6, heads=8, num_queries=16, lstm_hidden=256, lstm_layers=1):
+    def __init__(self, input_dim=4, embed_dim=128, depth=6, heads=16, num_queries=32, lstm_hidden=256, lstm_layers=1):
         super().__init__()
         self.model_type = "TransLSTM"
         self.embed = nn.Linear(input_dim, embed_dim)
-        self.temporal_pe = self._build_sinusoidal_encoding(embed_dim)
+        temporal_pe = self._build_sinusoidal_encoding(embed_dim)
+        self.register_buffer("temporal_pe", temporal_pe, persistent=False)
         self.spatial_pe = nn.Sequential(
             nn.Linear(2, embed_dim),
             nn.ReLU(),
@@ -19,7 +20,7 @@ class EventTransformer(nn.Module):
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=depth)
 
         self.pool_queries = nn.Parameter(torch.randn(1, num_queries, embed_dim))
-        self.attn_pool = nn.MultiheadAttention(embed_dim, heads, batch_first=True)
+        self.attn_pool = nn.MultiheadAttention(embed_dim, heads, batch_first=True, dropout=0.1)
 
         self.lstm = nn.LSTM(embed_dim * num_queries, lstm_hidden, num_layers=lstm_layers, batch_first=True)
         self.projector = nn.Sequential(
@@ -44,6 +45,9 @@ class EventTransformer(nn.Module):
             B, N, _ = events.shape
             times = events[:, :, 0]
             times = (times - times.min()) / (times.max() - times.min() + 1e-6)
+            ## zeroing all times with probability 0.1
+            if torch.rand(1).item() < 0.1:
+                times = torch.zeros_like(times)
             events[:, :, 0] = times
             x = self.embed(events)
             pos_t = self.temporal_pe[:, (times * 9999).long().clamp(0, 9999)]

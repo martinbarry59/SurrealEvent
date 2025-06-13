@@ -9,13 +9,19 @@ import cv2
 import tqdm
 import os
 import random
+import plotly
+from sklearn.manifold import TSNE
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # or use 'XVID' for .avi
 from torch.amp import autocast
 import torch.nn.functional as F
 import shutil
 import torchvision.transforms as T
-
+def variance_loss(x, eps=1e-4):
+    # x: [B, D]
+    std = torch.sqrt(x.var(dim=0) + eps)
+    return torch.mean(F.relu(1.0 - std))
 def plot_attention_map(attn_weights, events, b, q, img):
     query_attention = attn_weights[b, q]  # shape: [N]
     coords = events[b, :, 1:3].cpu().numpy()  # normalized x, y
@@ -27,6 +33,27 @@ def plot_attention_map(attn_weights, events, b, q, img):
     plt.colorbar(label='Attention Weight')
     plt.title(f"Query {q} attention over events")
     plt.show()
+def plotly_TSNE(tsne, labels, video_label, name):
+    ## nice plotly with labels on hover
+    fig = plotly.graph_objs.Figure()
+
+    for i in range(min(10, len(video_label))):
+        idx = labels == i
+        fig.add_trace(
+            plotly.graph_objs.Scatter(
+                x=tsne[idx, :][:, 0],
+                y=tsne[idx, :][:, 1],
+                mode="markers",
+                name=str(video_label[i].item()),
+                text=[str(video_label[i].item())] * tsne[idx, :][:, 0].shape[0],
+                hoverinfo="text",
+            )
+        )
+
+    ## save the htmtl plot
+    
+    fig.update_layout(title=name)
+    plotly.offline.plot(fig, filename=name + ".html")
 def edge_aware_loss(pred, target):
     
     pred_dx = pred[ :, :, 1:] - pred[ :, :, :-1]
@@ -47,6 +74,13 @@ def get_data(data, t):
         return events, depth, mask
     else:
         raise ValueError("Data must be a tuple of length 2 or 3")
+def check_CPC_representation_collapse(predictions, GT, threshold=0.1):
+    ##  check standard deviation of the predictions and GT
+    print("Checking CPC representation collapse")
+    std = torch.std(predictions, dim=1)
+    print(f"Standard deviation of predictions: {std.mean().item()}")
+    score = get_score(predictions, GT)
+    print(f"Score: {score.mean().item()}, Std: {score.std().item()}")
 def preprocess(batch):
     transforms = T.Compose(
         [
@@ -144,7 +178,6 @@ def regular_steps(data, model, optimizer, criterion, train=True, scaler = None):
                 GT.append(encoding.detach().clone())
                 if training_step % block_update == 0:
                     predictions = torch.stack(predictions[0:-1], dim=0)
-                    print(f"Predictions shape: {predictions.shape}")
                     ground_truths = torch.stack(GT[1:], dim=0)
                     # with torch.cuda.amp.autocast(enabled=False):
                     target, score = compute_CPC_loss(predictions, ground_truths, criterion)
@@ -157,7 +190,8 @@ def regular_steps(data, model, optimizer, criterion, train=True, scaler = None):
                         
                     #     score = torch.cat((score, score_old), dim=1)
                     target = target.argmax(dim=1)
-                    loss = criterion(score, target)
+                    var_loss = variance_loss(predictions)
+                    loss = criterion(score, target) + var_loss * 0.1
                     top1, top3, top5 = calc_topk_accuracy(score, target, (1, 3, 5))
                     loss_avg.append(loss.item())
                     top1_avg.append(top1.item())
@@ -187,10 +221,34 @@ def regular_steps(data, model, optimizer, criterion, train=True, scaler = None):
             break
         del  encoding, depth, events, kerneled
         return loss_avg, top1_avg, top3_avg, top5_avg, TMP_OLD_GT
+
+def vicreg_loss(z, z_pos, sim_coeff=25, var_coeff=25, cov_coeff=1, eps=1e-4, gamma=1.0):
+    # Invariance
+    z = z.view(-1, z.size(-1))
+    z_pos = z_pos.view(-1, z_pos.size(-1))
+    inv_loss = F.mse_loss(z, z_pos)
+
+    # Variance
+    std_z = torch.sqrt(z.var(dim=0) + eps)
+    std_z_pos = torch.sqrt(z_pos.var(dim=0) + eps)
+    var_loss = torch.mean(F.relu(gamma - std_z)) + torch.mean(F.relu(gamma - std_z_pos))
+
+    # Covariance
+    z_centered = z - z.mean(dim=0)
+    cov_z = (z_centered.T @ z_centered) / (z.size(0) - 1)
+    off_diag_z = cov_z.flatten()[::cov_z.size(1)+1]  # skipping diag
+    cov_loss = off_diag_z.pow(2).sum() / z.size(1)
+    # Same for z_pos
+    z_pos_centered = z_pos - z_pos.mean(dim=0)
+    cov_zp = (z_pos_centered.T @ z_pos_centered) / (z_pos.size(0) - 1)
+    off_diag_zp = cov_zp.flatten()[::cov_zp.size(1)+1]
+    cov_loss = cov_loss + off_diag_zp.pow(2).sum() / z_pos.size(1)
+
+    return sim_coeff * inv_loss + var_coeff * var_loss + cov_coeff * cov_loss
 def sequence_for_LSTM(data, model, criterion, optimizer, train = True, scaler = None):
     len_videos = 1188
     training_steps = 300
-    block_update = 8
+    block_update = 30
     step_size =  torch.randint(1, 10, (1,)).item()
     N_update = int(training_steps / block_update)
     t_start = random.randint(10, len_videos - N_update * block_update)
@@ -202,20 +260,36 @@ def sequence_for_LSTM(data, model, criterion, optimizer, train = True, scaler = 
         seq_events = []
         seq_masks = []
         start_seq = t_start + n * block_update * step_size
-        if start_seq >= t_end -1:
+        if start_seq >= t_end - block_update * step_size -1:
             break
         for t in range(start_seq, start_seq + block_update * step_size, step_size):
             events, _, mask = get_data(data, t)
             seq_events.append(events)
             seq_masks.append(mask)
+        
         predictions, encodings = model(seq_events, seq_masks)
+        if n == 0:
+            with torch.no_grad():
+                labels = torch.arange(0, encodings.shape[0], device=device)
+                ## repeat to all other dimensions
+                labels = labels.unsqueeze(1).repeat(1, encodings.shape[1]).view(-1)
+                unique_labels = torch.unique(labels)
+                ## flatten encodings
+                flattened_encodings = encodings.reshape(-1, encodings.shape[-1])
+                # print(encodings.shape, predictions.shape, flattened_encodings.shape, labels.shape, unique_labels.shape)
+                tsne = TSNE(n_components=2, verbose=0, perplexity=50, max_iter=2000).fit_transform(
+                    flattened_encodings.cpu().numpy()
+                )
+                plotly_TSNE(tsne, labels.cpu().detach().numpy(), unique_labels, f"{model.model_type}")
         predictions = predictions.permute(1,0,2).contiguous()[:-1]
         encodings = encodings.permute(1,0,2).contiguous()[1:]
         
         target, score = compute_CPC_loss(predictions, encodings, criterion)
         target = target.argmax(dim=1)
         score /= 0.07
-        loss = criterion(score, target)
+        # loss = criterion(score, target)
+
+        loss = vicreg_loss(predictions, encodings)
         top1, top3, top5 = calc_topk_accuracy(score, target, (1, 3, 5))
         loss_avg.append(loss.item())
         top1_avg.append(top1.item())
@@ -230,7 +304,8 @@ def sequence_for_LSTM(data, model, criterion, optimizer, train = True, scaler = 
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             scaler.step(optimizer)
             scaler.update()
-        
+        # if n == 0:
+        #     check_CPC_representation_collapse(predictions, encodings)
     return loss_avg, top1_avg, top3_avg, top5_avg
 def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, save_path=None):
     model.train() if train else model.eval()
@@ -255,11 +330,9 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
             top3_epoch.append(sum(top3_avg)/len(top3_avg))
             top5_epoch.append(sum(top5_avg)/len(top5_avg))
             string_value = f"Epoch {epoch}, Batch {batch_step} / {len(loader)}, Loss: {epoch_loss[-1]}, Top1: {top1_epoch[-1]}, Top3: {top3_epoch[-1]}, Top5: {top5_epoch[-1]}, LR: {optimizer.param_groups[0]['lr']}"
-            print(epoch_loss)
             with open(error_file, "a") as f:
                 f.write(string_value+"\n")
             # video_writer.release() if video_writer else None  
-            print(model.model_type) 
             if "Trans" not in model.model_type:
                 model.reset_states()            
             batch_tqdm.update(1)
@@ -270,7 +343,7 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
     return sum(epoch_loss)/len(epoch_loss)
 
 def main():
-    batch_size = 28
+    batch_size = 20
     network = "Transformer" # LSTM, Transformer, BOBWFF, BOBWLSTM
     
 
@@ -295,7 +368,7 @@ def main():
     #     model = UNetMobileNetSurreal(in_channels = 2, out_channels = 1, net_type = network , method = method) ## if no LSTM use there we give previous output as input
     if checkpoint_path:
 
-        checkpoint_file = f'{checkpoint_path}/model_epoch_7_{model.model_type}.pth'
+        checkpoint_file = f'{checkpoint_path}/model_epoch_110_{model.model_type}.pth'
         
         print(f"Loading checkpoint from {checkpoint_file}")
         try:
@@ -305,11 +378,9 @@ def main():
             print("Checkpoint not found, starting from scratch")
     model.to(device)
 
-    # criterion = torch.nn.SmoothL1Loss()
-    # criterion = lpips.LPIPS(net='alex')
     criterion = torch.nn.CrossEntropyLoss()
     criterion.to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-5, weight_decay=1e-5)
 
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10, eta_min=1e-6)  # 10 = total number of epochs
 
