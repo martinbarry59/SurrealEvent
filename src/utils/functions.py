@@ -1,6 +1,7 @@
 
 import torch
 import cv2
+
 def eventstohistogram(events, height=260, width=346):
         B, N, _ = events.shape
         x = (events[:, :, 1] * width).long().clamp(0, width - 1)
