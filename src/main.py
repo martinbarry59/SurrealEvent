@@ -101,6 +101,7 @@ def final_inference(model, loader, criterion, save_path=None):
         inference_loss = []
         inference_loss_MSE = []
         inference_loss_SSIM = []
+        
         for batch_step, data in enumerate(loader):
             len_videos = 1188
             
@@ -114,6 +115,7 @@ def final_inference(model, loader, criterion, save_path=None):
 
             n_images = 5 if len(data) == 2 else 3
             video_writer = cv2.VideoWriter(writer_path, fourcc, 30, (n_images*346,260))
+            
             for t in range(1, len_videos):
                 events, depth, mask = get_data(data, t)
                 outputs, _ = model(events, mask)
@@ -145,13 +147,10 @@ def final_inference(model, loader, criterion, save_path=None):
         with open(error_file, "a") as f:
             f.write(f"{final_losses}\n")
 def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, save_path=None, scaler=None):
-    # profiler = Profile()
-    # profiler.enable()
-    model.train() if train else model.eval()
-    # from torchvision.models.optical_flow import raft_large
 
-    # flow_model = raft_large(pretrained=True, progress=False).to(device)
-    # flow_model = flow_model.eval()
+    model.train() if train else model.eval()
+
+
     with torch.set_grad_enabled(train):
         tqdm_str = train *"training" + (1-train) * "testing"
         batch_tqdm = tqdm.tqdm(total=len(loader), desc=f"Batch {tqdm_str}" , position=0, leave=True)
@@ -177,6 +176,7 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
             t_start = random.randint(10, len_videos - N_update * block_update)
             t_end = t_start + N_update * block_update
             previous_output = None
+            
             for t in range(1, len_videos):
                 events, depth, mask = get_data(data, t)
                 kerneled = None
@@ -201,7 +201,6 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
                 ## also compute MSE loss
                 MSE_loss = F.mse_loss(outputs, depth.unsqueeze(1).repeat(1, 3, 1, 1))
                 ## compute SSIM loss
-                import torcheval
                 SSIM_loss = torch.torchev
                 loss_avg.append(instant_loss.item())
                 if t >= t_start:
@@ -260,26 +259,21 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
                 model.reset_states()            
             batch_tqdm.update(1)
             batch_tqdm.set_postfix({"loss": batch_loss})
-            # profiler.disable()
-            # stats = Stats(profiler)
-            # stats.strip_dirs()
-            # stats.sort_stats(SortKey.CUMULATIVE)
-            # stats.print_stats()
-    # stats.dump_stats("profiling_results.prof")
+           
         batch_tqdm.close()
     return sum(epoch_loss)/len(epoch_loss)
 
 def main():
-    batch_size = 15
+    batch_size = 2
     network = "BOBWLSTM" # LSTM, Transformer, BOBWFF, BOBWLSTM
     method = "add" ## add or concatenate
     
 
     loading_method = CNN_collate if (not ((network =="Transformer") or ("BOBW" in network))) else Transformer_collate
-    train_dataset = EventDepthDataset(data_path+"/train/")
+    train_dataset = EventDepthDataset(data_path+"/train/", tsne=False)
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=loading_method)
-    test_dataset = EventDepthDataset(data_path+"/test/")
-    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=10*batch_size, shuffle=False, collate_fn=loading_method)
+    test_dataset = EventDepthDataset(data_path+"/test/", tsne=False)
+    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=False, collate_fn=loading_method)
     epoch_checkpoint = 0
 
     # Load the model UNetMobileNetSurreal
