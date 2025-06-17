@@ -46,8 +46,8 @@ class EventTransformer(nn.Module):
             times = events[:, :, 0]
             times = (times - times.min()) / (times.max() - times.min() + 1e-6)
             ## zeroing all times with probability 0.1
-            if torch.rand(1).item() < 0.1:
-                times = torch.zeros_like(times)
+            # if torch.rand(1).item() < 0.1:
+            #     times = torch.zeros_like(times)
             events[:, :, 0] = times
             x = self.embed(events)
             pos_t = self.temporal_pe[:, (times * 9999).long().clamp(0, 9999)]

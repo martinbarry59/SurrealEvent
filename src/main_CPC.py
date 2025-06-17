@@ -1,8 +1,7 @@
-from models.MobileNetSurreal import UNetMobileNetSurreal
 from models.TransformerEventSurreal import EventTransformer
 from models.BOBW_CPC import BestOfBothWorld
 from utils.dataloader import EventDepthDataset, CNN_collate, Transformer_collate
-from utils.functions import add_frame_to_video, calc_topk_accuracy
+from utils.functions import calc_topk_accuracy
 import torch
 from config import data_path, results_path, checkpoint_path
 import cv2
@@ -368,7 +367,7 @@ def main():
     #     model = UNetMobileNetSurreal(in_channels = 2, out_channels = 1, net_type = network , method = method) ## if no LSTM use there we give previous output as input
     if checkpoint_path:
 
-        checkpoint_file = f'{checkpoint_path}/model_epoch_110_{model.model_type}.pth'
+        checkpoint_file = f'{checkpoint_path}/model_epoch_5_{model.model_type}.pth'
         
         print(f"Loading checkpoint from {checkpoint_file}")
         try:
