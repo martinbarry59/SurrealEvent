@@ -1,5 +1,5 @@
 import random
-
+from utils.functions import add_frame_to_video
 from sklearn.manifold import TSNE
 from utils.functions import calc_topk_accuracy
 from utils.plot_utils import plotly_TSNE
@@ -10,10 +10,11 @@ import torch.nn.functional as F
 from models.TransformerEventSurreal import EventTransformer
 from models.BOBVEG import BestOfBothWorld
 from utils.dataloader import EventDepthDataset, CNN_collate, Transformer_collate
-
+import cv2
 from config import data_path, results_path, checkpoint_path
 import os
 import shutil
+from torch.amp import autocast
 
 def variance_loss(x, eps=1e-4):
     # x: [B, D]
@@ -118,7 +119,7 @@ def vicreg_loss(z, z_pos, sim_coeff=25, var_coeff=25, cov_coeff=1, eps=1e-4, gam
     return sim_coeff * inv_loss + var_coeff * var_loss + cov_coeff * cov_loss
 
 
-def forward_feed(model, data, device, step_size=1, start_seq=0, block_update=30):
+def forward_feed(model, data, device, step_size=1, start_seq=0, block_update=30, video_writer=None):
     seq_events = []
     seq_masks = []
     seq_depths = []
@@ -126,7 +127,7 @@ def forward_feed(model, data, device, step_size=1, start_seq=0, block_update=30)
     for t in range(start_seq, start_seq + block_update * step_size, step_size):   
         datat = get_data(data, t)
         events, depth , mask = datat[:3]
-        events, mask = events.to(device), mask.to(device), depth.to(device)
+        events, mask, depth = events.to(device), mask.to(device), depth.to(device)
         
         labels = None
         if len(datat) == 4:
@@ -139,9 +140,19 @@ def forward_feed(model, data, device, step_size=1, start_seq=0, block_update=30)
         if labels is not None:
             seq_labels.append(labels)
     ## convert the seq_labels to numpy array
+    seq_depths = torch.stack(seq_depths, dim=1)
     if len(seq_labels) > 0:
         seq_labels = np.array(seq_labels)
     predictions, encodings = model(seq_events, seq_masks)
+    with torch.no_grad():
+                    
+        if video_writer:
+            for t in range(predictions.shape[1]):
+                events = seq_events[t]
+                depth = seq_depths[:,t]
+                outputs = predictions[:,t]
+                images_to_write = [events, depth[0], outputs[0]]
+                add_frame_to_video(video_writer, images_to_write)
     return predictions, encodings, seq_labels, seq_depths
 
 
@@ -157,6 +168,22 @@ def compute_loss(predictions, encodings, criterion):
     loss += vicreg_loss(predictions, encodings)
     top1, top3, top5 = calc_topk_accuracy(score, target, (1, 3, 5))
     return loss, top1, top3, top5, score, target
+def compute_LPIPS_loss(predictions, depths, criterion):
+    loss = 0
+    predictions.unsqueeze_(2)
+    predictions = predictions.repeat(1, 1, 3, 1, 1)
+    depths.unsqueeze_(2)
+    depths = depths.repeat(1, 1, 3, 1, 1)
+    for t in range(predictions.shape[1]):
+        pred = predictions[:,t]
+        enc = depths[:,t]
+        loss += criterion(pred, enc).mean()
+        if t > 0:
+            loss_est = torch.exp(-50 * torch.nn.MSELoss()(depths[:,t], depths[:,t-1]))
+            loss_t = F.l1_loss(predictions[:,t], predictions[:,t-1])
+            TC_loss = loss_t * loss_est
+            loss += 50 * TC_loss / predictions.shape[1]
+    return loss / predictions.shape[1]
 def update(loss, model, optimizer, scaler):
     scaler.scale(loss).backward()
     scaler.unscale_(optimizer)
@@ -164,17 +191,18 @@ def update(loss, model, optimizer, scaler):
     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
     scaler.step(optimizer)
     scaler.update()
-
+    model.detach_states()
 def sequence_for_LSTM(data, model, criterion, optimizer, device,
                     train = True, scaler = None,
-                    len_videos=1188, training_steps=300, block_update=30, rand_step=True
-                    ):
+                    len_videos=1188, training_steps=10, block_update=5, rand_step=True,
+                    video_writer=None):
     if rand_step:
         step_size =  torch.randint(1, 10, (1,)).item()
     else:
         ## fixed step size
         step_size = 1
-
+    
+    print(len_videos, training_steps, block_update, step_size)
     N_update = int(training_steps / block_update)
     t_start = random.randint(10, len_videos - N_update * block_update)
     loss_avg = []
@@ -183,7 +211,9 @@ def sequence_for_LSTM(data, model, criterion, optimizer, device,
         start_seq = t_start + n * block_update * step_size
         if (start_seq + block_update * step_size) > len_videos - 1:
             break
-        predictions, encodings, labels, depths = forward_feed(model, data, device, step_size=step_size, start_seq=start_seq, block_update=block_update)
+        predictions, encodings, labels, depths = forward_feed(model, data, device, step_size=step_size, 
+                                                              start_seq=start_seq, block_update=block_update, 
+                                                              video_writer=video_writer)
         
         if n == 0 and len(labels) > 0:
             with torch.no_grad():
@@ -203,32 +233,21 @@ def sequence_for_LSTM(data, model, criterion, optimizer, device,
         # MSE_loss = F.mse_loss(outputs, depth.unsqueeze(1).repeat(1, 3, 1, 1))
         ## compute SSIM loss
         # SSIM_loss = torch.torchev
-        loss = criterion(predictions, depths)
-        #     loss_t = F.l1_loss(previous_output, outputs)
-        #     loss_est = torch.exp(- 50 * torch.nn.MSELoss()(depth_previous, depth))
-        #     TC_loss = loss_t * loss_est
-        #     loss += 50 * TC_loss / block_update
-        with torch.no_grad():
-                    
-            if video_writer:
-                
-                if kerneled is not None:
-                    kerneled = kerneled-kerneled.min() 
-                    kerneled = kerneled/(kerneled.max()+1e-6)
-                    images_to_write = [events, kerneled[0,0], kerneled[0,1], depth[0], outputs[0,0].squeeze(0)]
-                else:
-                    images_to_write = [events, depth[0], outputs[0,0].squeeze(0)]
-                add_frame_to_video(video_writer, images_to_write)
+        loss = compute_LPIPS_loss(predictions, depths, criterion)
+        print(f"Loss: {loss}")
+       
+        
         loss_avg.append(loss.item())
         if train:
             update(loss, model, optimizer, scaler)
             
         # if n == 0:
         #     check_CPC_representation_collapse(predictions, encodings)
-    return predictions, loss_avg
+    model.reset_states()
+    return loss_avg
 def sequence_for_LSTM_CPC(data, model, criterion, optimizer, device,
                     train = True, scaler = None,
-                    len_videos=1188, training_steps=300, block_update=30, rand_step=True
+                    len_videos=1188, training_steps=300, block_update=5, rand_step=True
                     ):
     if rand_step:
         step_size =  torch.randint(1, 10, (1,)).item()

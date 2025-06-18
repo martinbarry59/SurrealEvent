@@ -1,16 +1,15 @@
 
 from models.BOBW import BestOfBothWorld
 from utils.dataloader import EventDepthDataset, CNN_collate, Transformer_collate
-from utils.functions import add_frame_to_video
+
 import torch
-from config import data_path, results_path, checkpoint_path
+from config import data_path, checkpoint_path, results_path
 import cv2
 import tqdm
 import os
-import random
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # or use 'XVID' for .avi
-from torch.amp import autocast
+
 import torch.nn.functional as F
 import lpips
 import torchvision.transforms as T
@@ -102,17 +101,11 @@ def final_inference(model, loader, criterion, save_path=None):
         
         for batch_step, data in enumerate(loader):
             len_videos = 1188
-            
+            writer_path = f'{save_path}/{tqdm_str}_video_{batch_step}.mp4' if save_path else None
             loss_avg = []
             loss_MSE = []
             loss_SSIM = []
-            writer_path = f'{save_path}/{tqdm_str}_video_{batch_step}.mp4' if save_path else None
-            if save_path and not os.path.exists(writer_path):
-                os.makedirs(os.path.dirname(writer_path), exist_ok=True)
-
-
-            n_images = 5 if len(data) == 2 else 3
-            video_writer = cv2.VideoWriter(writer_path, fourcc, 30, (n_images*346,260))
+           
             
             for t in range(1, len_videos):
                 events, depth, mask = get_data(data, t)
@@ -128,9 +121,9 @@ def final_inference(model, loader, criterion, save_path=None):
                 loss_avg.append(instant_loss.item())
                 loss_MSE.append(MSE_loss.item())
                 loss_SSIM.append(state.metrics['ssim'])                    
-                if video_writer:
-                    images_to_write = [events, depth[0], outputs[0,0].squeeze(0)]
-                    add_frame_to_video(video_writer, images_to_write)
+                # if video_writer:
+                #     images_to_write = [events, depth[0], outputs[0,0].squeeze(0)]
+                #     add_frame_to_video(video_writer, images_to_write)
             losses = f"Batch Losses, Loss: {sum(loss_avg)/len(loss_avg)}, MSE: {sum(loss_MSE)/len(loss_MSE)}, SSIM: {sum(loss_SSIM)/len(loss_SSIM)}"
             batch_tqdm.update(1)
             batch_tqdm.set_postfix({"loss": instant_loss})
@@ -156,14 +149,14 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
         epoch_loss = []
         
         for batch_step, data in enumerate(loader):
-            loss_avg= sequence_for_LSTM(data, model, criterion, optimizer, device, train, scaler)
+            
 
 
             writer_path = f'{save_path}/{tqdm_str}_EPOCH_{epoch}_video_{batch_step}.mp4' if save_path else None
             if save_path and not os.path.exists(writer_path):
                 os.makedirs(os.path.dirname(writer_path), exist_ok=True)
             video_writer = cv2.VideoWriter(writer_path, fourcc, 30, (3*346,260)) if (not train or batch_step % 10==0 and save_path) else None
-            
+            loss_avg= sequence_for_LSTM(data, model, criterion, optimizer, device, train, scaler,video_writer = video_writer)
             # for t in range(1, len_videos):
             #     events, depth, mask = get_data(data, t)
             #     kerneled = None
@@ -238,9 +231,8 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
     return sum(epoch_loss)/len(epoch_loss)
 
 def main():
-    batch_size = 2
+    batch_size = 3
     network = "BOBWLSTM" # LSTM, Transformer, BOBWFF, BOBWLSTM
-    method = "add" ## add or concatenate
     
 
     loading_method = CNN_collate if (not ((network =="Transformer") or ("BOBW" in network))) else Transformer_collate
@@ -249,7 +241,7 @@ def main():
     test_dataset = EventDepthDataset(data_path+"/test/", tsne=False)
     test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=False, collate_fn=loading_method)
     epoch_checkpoint = 0
-
+    save_path = f"{results_path}/{network}"
     model = BestOfBothWorld(model_type=network)
     if checkpoint_path:
         checkpoint_file = f'{checkpoint_path}/model_epoch_7_{model.model_type}_{model.method}.pth'
@@ -267,7 +259,7 @@ def main():
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)
 
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10, eta_min=1e-6)  # 10 = total number of epochs
-    test_only = True
+    test_only = False
     min_loss = float('inf')
     for epoch in range(100):
         if epoch >= epoch_checkpoint:
