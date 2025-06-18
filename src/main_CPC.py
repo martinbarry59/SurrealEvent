@@ -16,7 +16,7 @@ fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # or use 'XVID' for .avi
 def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, save_path=None):
     model.train() if train else model.eval()
     scaler = torch.amp.GradScaler(device=device)
-    
+    model.training = train
     with torch.set_grad_enabled(train):
         tqdm_str = train *"training" + (1-train) * "testing"
         batch_tqdm = tqdm.tqdm(total=len(loader), desc=f"Batch {tqdm_str}" , position=0, leave=True)
@@ -51,7 +51,7 @@ def main():
 
     network = "BOBW"  # or "BOBW", "LSTM"
     model, train_loader, test_loader, optimizer, scheduler, \
-    criterion, save_path, epoch_checkpoint = init_simulation(device, batch_size=2, network=network, checkpoint_file=f"model_epoch_110.pth")
+    criterion, save_path, epoch_checkpoint = init_simulation(device, batch_size=10, network=network, checkpoint_file=f"model_epoch_110.pth")
     min_loss = float('inf')
     for epoch in range(100):
         if epoch >= epoch_checkpoint:

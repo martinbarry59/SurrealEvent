@@ -121,11 +121,13 @@ def vicreg_loss(z, z_pos, sim_coeff=25, var_coeff=25, cov_coeff=1, eps=1e-4, gam
 def forward_feed(model, data, device, step_size=1, start_seq=0, block_update=30):
     seq_events = []
     seq_masks = []
+    seq_depths = []
     seq_labels = []
     for t in range(start_seq, start_seq + block_update * step_size, step_size):   
         datat = get_data(data, t)
-        events, _, mask = datat[:3]
-        events, mask = events.to(device), mask.to(device)
+        events, depth , mask = datat[:3]
+        events, mask = events.to(device), mask.to(device), depth.to(device)
+        
         labels = None
         if len(datat) == 4:
             labels = datat[3]
@@ -133,13 +135,14 @@ def forward_feed(model, data, device, step_size=1, start_seq=0, block_update=30)
        
         seq_events.append(events)
         seq_masks.append(mask)
+        seq_depths.append(depth)
         if labels is not None:
             seq_labels.append(labels)
     ## convert the seq_labels to numpy array
     if len(seq_labels) > 0:
         seq_labels = np.array(seq_labels)
     predictions, encodings = model(seq_events, seq_masks)
-    return predictions, encodings, seq_labels
+    return predictions, encodings, seq_labels, seq_depths
 
 
 def compute_loss(predictions, encodings, criterion):
@@ -149,9 +152,9 @@ def compute_loss(predictions, encodings, criterion):
     target, score = compute_CPC_loss(predictions, encodings, criterion)
     target = target.argmax(dim=1)
     score /= 0.07
-    # loss = criterion(score, target)
+    loss = criterion(score, target)
 
-    loss = vicreg_loss(predictions, encodings)
+    loss += vicreg_loss(predictions, encodings)
     top1, top3, top5 = calc_topk_accuracy(score, target, (1, 3, 5))
     return loss, top1, top3, top5, score, target
 def update(loss, model, optimizer, scaler):
@@ -162,9 +165,71 @@ def update(loss, model, optimizer, scaler):
     scaler.step(optimizer)
     scaler.update()
 
-
 def sequence_for_LSTM(data, model, criterion, optimizer, device,
-                        train = True, scaler = None, len_videos=1188, training_steps=300, block_update=30, rand_step=True):
+                    train = True, scaler = None,
+                    len_videos=1188, training_steps=300, block_update=30, rand_step=True
+                    ):
+    if rand_step:
+        step_size =  torch.randint(1, 10, (1,)).item()
+    else:
+        ## fixed step size
+        step_size = 1
+
+    N_update = int(training_steps / block_update)
+    t_start = random.randint(10, len_videos - N_update * block_update)
+    loss_avg = []
+    for n in range(N_update):
+        
+        start_seq = t_start + n * block_update * step_size
+        if (start_seq + block_update * step_size) > len_videos - 1:
+            break
+        predictions, encodings, labels, depths = forward_feed(model, data, device, step_size=step_size, start_seq=start_seq, block_update=block_update)
+        
+        if n == 0 and len(labels) > 0:
+            with torch.no_grad():
+                labels = np.permute_dims(labels, (1, 0))
+                ## flatten labels
+                labels = labels.reshape(-1)
+                video_labels = labels.copy()
+                video_labels = np.array([ l.split("_t_")[0] for l in video_labels])
+                ## repeat to all other dimensions
+                ## flatten encodings
+                flattened_encodings = encodings.reshape(-1, encodings.shape[-1])
+                # print(encodings.shape, predictions.shape, flattened_encodings.shape, labels.shape, unique_labels.shape)
+                tsne = TSNE(n_components=2, verbose=0, perplexity=50, max_iter=2000).fit_transform(
+                    flattened_encodings.cpu().numpy()
+                )
+                plotly_TSNE(tsne, labels, video_labels, f"{model.model_type}")
+        # MSE_loss = F.mse_loss(outputs, depth.unsqueeze(1).repeat(1, 3, 1, 1))
+        ## compute SSIM loss
+        # SSIM_loss = torch.torchev
+        loss = criterion(predictions, depths)
+        #     loss_t = F.l1_loss(previous_output, outputs)
+        #     loss_est = torch.exp(- 50 * torch.nn.MSELoss()(depth_previous, depth))
+        #     TC_loss = loss_t * loss_est
+        #     loss += 50 * TC_loss / block_update
+        with torch.no_grad():
+                    
+            if video_writer:
+                
+                if kerneled is not None:
+                    kerneled = kerneled-kerneled.min() 
+                    kerneled = kerneled/(kerneled.max()+1e-6)
+                    images_to_write = [events, kerneled[0,0], kerneled[0,1], depth[0], outputs[0,0].squeeze(0)]
+                else:
+                    images_to_write = [events, depth[0], outputs[0,0].squeeze(0)]
+                add_frame_to_video(video_writer, images_to_write)
+        loss_avg.append(loss.item())
+        if train:
+            update(loss, model, optimizer, scaler)
+            
+        # if n == 0:
+        #     check_CPC_representation_collapse(predictions, encodings)
+    return predictions, loss_avg
+def sequence_for_LSTM_CPC(data, model, criterion, optimizer, device,
+                    train = True, scaler = None,
+                    len_videos=1188, training_steps=300, block_update=30, rand_step=True
+                    ):
     if rand_step:
         step_size =  torch.randint(1, 10, (1,)).item()
     else:
@@ -198,6 +263,7 @@ def sequence_for_LSTM(data, model, criterion, optimizer, device,
                     flattened_encodings.cpu().numpy()
                 )
                 plotly_TSNE(tsne, labels, video_labels, f"{model.model_type}")
+        
         loss, top1, top3, top5, score, target = compute_loss(predictions, encodings, criterion)
         loss_avg.append(loss.item())
         top1_avg.append(top1.item())
@@ -212,7 +278,7 @@ def sequence_for_LSTM(data, model, criterion, optimizer, device,
     return loss_avg, top1_avg, top3_avg, top5_avg
 
 
-def init_simulation(device, batch_size=20, network="Transformer", checkpoint_file = None):
+def init_simulation(device, batch_size=10, network="Transformer", checkpoint_file = None):
     
 
     loading_method = CNN_collate if (not ((network =="Transformer") or ("BOBW" in network))) else Transformer_collate
@@ -248,7 +314,7 @@ def init_simulation(device, batch_size=20, network="Transformer", checkpoint_fil
 
     criterion = torch.nn.CrossEntropyLoss()
     criterion.to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-5, weight_decay=1e-5)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)
 
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10, eta_min=1e-6)  # 10 = total number of epochs
     return model, train_loader, test_loader, optimizer, scheduler, criterion, save_path, epoch_checkpoint

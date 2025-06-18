@@ -1,5 +1,4 @@
-from models.MobileNetSurreal import UNetMobileNetSurreal
-from models.TransformerEventSurreal import EventTransformer
+
 from models.BOBW import BestOfBothWorld
 from utils.dataloader import EventDepthDataset, CNN_collate, Transformer_collate
 from utils.functions import add_frame_to_video
@@ -13,12 +12,11 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # or use 'XVID' for .avi
 from torch.amp import autocast
 import torch.nn.functional as F
-import shutil
 import lpips
 import torchvision.transforms as T
 from ignite.metrics import SSIM
 from ignite.engine import Engine
-
+from utils.nn_utils import sequence_for_LSTM
 def plot_attention_map(attn_weights, events, b, q, img):
     query_attention = attn_weights[b, q]  # shape: [N]
     coords = events[b, :, 1:3].cpu().numpy()  # normalized x, y
@@ -158,97 +156,73 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
         epoch_loss = []
         
         for batch_step, data in enumerate(loader):
-            len_videos = 1188
-            
-            loss_avg = [0]
+            loss_avg= sequence_for_LSTM(data, model, criterion, optimizer, device, train, scaler)
+
+
             writer_path = f'{save_path}/{tqdm_str}_EPOCH_{epoch}_video_{batch_step}.mp4' if save_path else None
             if save_path and not os.path.exists(writer_path):
                 os.makedirs(os.path.dirname(writer_path), exist_ok=True)
-
-
-            n_images = 5 if len(data) == 2 else 3
-            video_writer = cv2.VideoWriter(writer_path, fourcc, 30, (n_images*346,260)) if (not train or batch_step % 10==0 and save_path) else None
-            loss = 0
-            training_step = 300 ## how many frames I want to update total
-            block_update = 30
-
-            N_update = int(training_step / block_update)
-            t_start = random.randint(10, len_videos - N_update * block_update)
-            t_end = t_start + N_update * block_update
-            previous_output = None
+            video_writer = cv2.VideoWriter(writer_path, fourcc, 30, (3*346,260)) if (not train or batch_step % 10==0 and save_path) else None
             
-            for t in range(1, len_videos):
-                events, depth, mask = get_data(data, t)
-                kerneled = None
+            # for t in range(1, len_videos):
+            #     events, depth, mask = get_data(data, t)
+            #     kerneled = None
                 
-                with autocast(device_type="cuda"):
-                    if t < t_start:
-                        with torch.no_grad():
-                            if mask is not None:
-                                outputs, attn_weights = model(events, mask)
-                            else:
-                                outputs, _, kerneled = model(events)
-                    else:
+            #     with autocast(device_type="cuda"):
+            #         if t < t_start:
+            #             with torch.no_grad():
+            #                 if mask is not None:
+            #                     outputs, attn_weights = model(events, mask)
+            #                 else:
+            #                     outputs, _, kerneled = model(events)
+            #         else:
                         
-                        optimizer.zero_grad()
-                        if mask is not None:
-                            outputs, attn_weights = model(events, mask)
-                        else:
-                            outputs, _, kerneled = model(events)
-                    ## repeat ouputs for 3 channels
-                instant_loss = criterion(outputs.repeat(1, 3, 1, 1), depth.unsqueeze(1).repeat(1, 3, 1, 1)).sum()
+            #             optimizer.zero_grad()
+            #             if mask is not None:
+            #                 outputs, attn_weights = model(events, mask)
+            #             else:
+            #                 outputs, _, kerneled = model(events)
+            #         ## repeat ouputs for 3 channels
+            #     instant_loss = criterion(outputs.repeat(1, 3, 1, 1), depth.unsqueeze(1).repeat(1, 3, 1, 1)).sum()
 
                 ## also compute MSE loss
-                MSE_loss = F.mse_loss(outputs, depth.unsqueeze(1).repeat(1, 3, 1, 1))
-                ## compute SSIM loss
-                SSIM_loss = torch.torchev
-                loss_avg.append(instant_loss.item())
-                if t >= t_start:
-                    loss += instant_loss / block_update
-                    with torch.no_grad():
-                        _, depth_previous, _ = get_data(data, t-1)
-
-                    loss_t = F.l1_loss(previous_output, outputs)
-                    loss_est = torch.exp(- 50 * torch.nn.MSELoss()(depth_previous, depth))
-                    TC_loss = loss_t * loss_est
-                    loss += 50 * TC_loss / block_update
-
-                    if train and (((t-t_start) % block_update == (block_update-1)) or t == t_end-1):
-                        
-                        if scaler is not None:
-                            scaler.scale(loss).backward()
-                            scaler.unscale_(optimizer)
-                            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
-                            scaler.step(optimizer)
-                            scaler.update()
-                        else:
-                            loss.backward()
-                            optimizer.step()
-                        
-                        
-                        if model.model_type != "Transformer":
-                            model.detach_states()
-                        loss = 0
-                with torch.no_grad():
-                    
-                    if video_writer:
-                        
-                        if kerneled is not None:
-                            kerneled = kerneled-kerneled.min() 
-                            kerneled = kerneled/(kerneled.max()+1e-6)
-                            images_to_write = [events, kerneled[0,0], kerneled[0,1], depth[0], outputs[0,0].squeeze(0)]
-                        else:
-                            images_to_write = [events, depth[0], outputs[0,0].squeeze(0)]
-                        add_frame_to_video(video_writer, images_to_write)
-                previous_output = outputs.detach().clone()
                 
-                if t == t_end -1:
-                    # with torch.no_grad():
-                    #     if video_writer:
-                    #         for q in range(attn_weights.shape[1]):
-                    #             plot_attention_map(attn_weights, events, 0, q, depth[0])
-                    break
-                del  outputs, depth, events, kerneled
+                # loss_avg.append(instant_loss.item())
+                # if t >= t_start:
+                #     loss += instant_loss / block_update
+                #     with torch.no_grad():
+                #         _, depth_previous, _ = get_data(data, t-1)
+
+                #     loss_t = F.l1_loss(previous_output, outputs)
+                #     loss_est = torch.exp(- 50 * torch.nn.MSELoss()(depth_previous, depth))
+                #     TC_loss = loss_t * loss_est
+                #     loss += 50 * TC_loss / block_update
+
+                    # if train and (((t-t_start) % block_update == (block_update-1)) or t == t_end-1):
+                        
+                    #     if scaler is not None:
+                    #         scaler.scale(loss).backward()
+                    #         scaler.unscale_(optimizer)
+                    #         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
+                    #         scaler.step(optimizer)
+                    #         scaler.update()
+                    #     else:
+                    #         loss.backward()
+                    #         optimizer.step()
+                        
+                        
+                        # if model.model_type != "Transformer":
+                        #     model.detach_states()
+                        # loss = 0
+                
+                
+                # if t == t_end -1:
+                #     # with torch.no_grad():
+                #     #     if video_writer:
+                #     #         for q in range(attn_weights.shape[1]):
+                #     #             plot_attention_map(attn_weights, events, 0, q, depth[0])
+                #     break
+                # del  outputs, depth, events, kerneled
 
             batch_loss = sum(loss_avg)/len(loss_avg)
             epoch_loss.append(batch_loss)
@@ -276,18 +250,7 @@ def main():
     test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=False, collate_fn=loading_method)
     epoch_checkpoint = 0
 
-    # Load the model UNetMobileNetSurreal
-    
-    save_path = f'{results_path}/{network}_{method}'
-    if os.path.exists(save_path):
-        shutil.rmtree(save_path)
-    os.makedirs(save_path)
-    if network == "Transformer":
-        model = EventTransformer()
-    elif "BOBW" in network:
-        model = BestOfBothWorld(model_type=network)
-    else:
-        model = UNetMobileNetSurreal(in_channels = 2, out_channels = 1, net_type = network , method = method) ## if no LSTM use there we give previous output as input
+    model = BestOfBothWorld(model_type=network)
     if checkpoint_path:
         checkpoint_file = f'{checkpoint_path}/model_epoch_7_{model.model_type}_{model.method}.pth'
         epoch_checkpoint = int(checkpoint_file.split("_")[2]) + 1

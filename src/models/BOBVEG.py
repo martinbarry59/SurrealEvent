@@ -21,7 +21,7 @@ class BestOfBothWorld(nn.Module):
         lstm_hidden=256
         lstm_layers=2
         self.init_transformer(input_dim, embed_dim, depth, heads)
-        self.lstm = nn.LSTM(embed_dim * num_queries + 128*9*11, lstm_hidden, num_layers=lstm_layers, batch_first=True)
+        self.lstm = nn.LSTM(128*9*11 + 1280*9*11, lstm_hidden, num_layers=lstm_layers, batch_first=True)
         self.projector = nn.Sequential(
             nn.Linear(lstm_hidden, lstm_hidden),
             nn.ReLU(),
@@ -60,7 +60,7 @@ class BestOfBothWorld(nn.Module):
             nn.Linear(embed_dim * self.num_queries, self.mheight * self.mwidth * self.channels)
         )
         self.encoder_channels[-1] = self.encoder_channels[-1] + self.channels
-        
+        self.training = True
     def reset_states(self):
         if "LSTM" in self.model_type:
             self.convlstm.reset_hidden()
@@ -89,7 +89,8 @@ class BestOfBothWorld(nn.Module):
             t_min = events[:, :, 0].min(dim=1, keepdim=True)[0]
             t_max = events[:, :, 0].max(dim=1, keepdim=True)[0]
             times = (events[:, :, 0] - t_min) / (t_max - t_min + 1e-6)
-            
+            if self.training and torch.rand(1).item() < 0.3:
+                times = torch.zeros_like(times)
 
             events[:, :, 0] = times
             t_idx = (times * (self.temporal_pe.shape[1] - 1)).long().clamp(0, self.temporal_pe.shape[1] - 1)  # [B, N]
@@ -115,10 +116,8 @@ class BestOfBothWorld(nn.Module):
         lstm_inputs = []
         for events, mask in zip(event_sequence, mask_sequence):
             pooled = self.transformer_forward(events, mask)
-            print("pooled", pooled.shape)
             hist_events = eventstohistogram(events)
             CNN_encoder, feats = self.encoder(hist_events)
-            print("CNN_encoder", CNN_encoder.shape)
         
         # Concatenate the outputs from the transformer and CNN
             x = torch.cat([pooled, CNN_encoder], dim=1)
