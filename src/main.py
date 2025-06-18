@@ -134,7 +134,6 @@ def final_inference(model, loader, criterion, save_path=None):
                 f.write(f"{losses}\n")
             model.reset_states()
         final_losses = f"Final Losses, Loss: {sum(inference_loss)/len(inference_loss)}, MSE: {sum(inference_loss_MSE)/len(inference_loss_MSE)}, SSIM: {sum(inference_loss_SSIM)/len(inference_loss_SSIM)}"
-        print(final_losses)
         with open(error_file, "a") as f:
             f.write(f"{final_losses}\n")
 def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, save_path=None, scaler=None):
@@ -231,7 +230,7 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
     return sum(epoch_loss)/len(epoch_loss)
 
 def main():
-    batch_size = 3
+    batch_size = 20
     network = "BOBWLSTM" # LSTM, Transformer, BOBWFF, BOBWLSTM
     
 
@@ -244,11 +243,11 @@ def main():
     save_path = f"{results_path}/{network}"
     model = BestOfBothWorld(model_type=network)
     if checkpoint_path:
-        checkpoint_file = f'{checkpoint_path}/model_epoch_7_{model.model_type}_{model.method}.pth'
+        checkpoint_file = f'{checkpoint_path}/model_epoch_3_BOBWLSTM_add.pth'
         epoch_checkpoint = int(checkpoint_file.split("_")[2]) + 1
         print(f"Loading checkpoint from {checkpoint_file}")
         try:
-            model.load_state_dict(torch.load(checkpoint_file))
+            model.load_state_dict(torch.load(checkpoint_file, map_location=device))
         except:
             print("Checkpoint not found, starting from scratch")
     model.to(device)

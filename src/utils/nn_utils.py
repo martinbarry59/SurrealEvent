@@ -194,7 +194,7 @@ def update(loss, model, optimizer, scaler):
     model.detach_states()
 def sequence_for_LSTM(data, model, criterion, optimizer, device,
                     train = True, scaler = None,
-                    len_videos=1188, training_steps=10, block_update=5, rand_step=True,
+                    len_videos=1188, training_steps=30, block_update=50, rand_step=True,
                     video_writer=None):
     if rand_step:
         step_size =  torch.randint(1, 10, (1,)).item()
@@ -202,7 +202,6 @@ def sequence_for_LSTM(data, model, criterion, optimizer, device,
         ## fixed step size
         step_size = 1
     
-    print(len_videos, training_steps, block_update, step_size)
     N_update = int(training_steps / block_update)
     t_start = random.randint(10, len_videos - N_update * block_update)
     loss_avg = []
