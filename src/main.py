@@ -146,7 +146,8 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
         batch_tqdm = tqdm.tqdm(total=len(loader), desc=f"Batch {tqdm_str}" , position=0, leave=True)
         error_file = f'{save_path}/{tqdm_str}_error.txt' if save_path else None
         epoch_loss = []
-        
+        loss_MSE = []
+        loss_SSIM = []
         for batch_step, data in enumerate(loader):
             
 
@@ -155,82 +156,32 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
             if save_path and not os.path.exists(writer_path):
                 os.makedirs(os.path.dirname(writer_path), exist_ok=True)
             video_writer = cv2.VideoWriter(writer_path, fourcc, 30, (3*346,260)) if (not train or batch_step % 10==0 and save_path) else None
-            loss_avg= sequence_for_LSTM(data, model, criterion, optimizer, device, train, scaler,video_writer = video_writer)
-            # for t in range(1, len_videos):
-            #     events, depth, mask = get_data(data, t)
-            #     kerneled = None
-                
-            #     with autocast(device_type="cuda"):
-            #         if t < t_start:
-            #             with torch.no_grad():
-            #                 if mask is not None:
-            #                     outputs, attn_weights = model(events, mask)
-            #                 else:
-            #                     outputs, _, kerneled = model(events)
-            #         else:
-                        
-            #             optimizer.zero_grad()
-            #             if mask is not None:
-            #                 outputs, attn_weights = model(events, mask)
-            #             else:
-            #                 outputs, _, kerneled = model(events)
-            #         ## repeat ouputs for 3 channels
-            #     instant_loss = criterion(outputs.repeat(1, 3, 1, 1), depth.unsqueeze(1).repeat(1, 3, 1, 1)).sum()
+            with torch.cuda.amp.autocast():
+                loss_avg, loss_MSE, loss_SSIM= sequence_for_LSTM(data, model, criterion, optimizer, device, train, scaler,video_writer = video_writer)
+            
+                batch_loss = sum(loss_avg)/len(loss_avg)
+                epoch_loss.append(batch_loss)
+                if len(loss_MSE) > 0:
+                    batch_loss_MSE = sum(loss_MSE)/len(loss_MSE)
+                    loss_MSE.append(batch_loss_MSE)
+                    batch_loss_SSIM = sum(loss_SSIM)/len(loss_SSIM)
+                    loss_SSIM.append(batch_loss_SSIM)
 
-                ## also compute MSE loss
-                
-                # loss_avg.append(instant_loss.item())
-                # if t >= t_start:
-                #     loss += instant_loss / block_update
-                #     with torch.no_grad():
-                #         _, depth_previous, _ = get_data(data, t-1)
-
-                #     loss_t = F.l1_loss(previous_output, outputs)
-                #     loss_est = torch.exp(- 50 * torch.nn.MSELoss()(depth_previous, depth))
-                #     TC_loss = loss_t * loss_est
-                #     loss += 50 * TC_loss / block_update
-
-                    # if train and (((t-t_start) % block_update == (block_update-1)) or t == t_end-1):
-                        
-                    #     if scaler is not None:
-                    #         scaler.scale(loss).backward()
-                    #         scaler.unscale_(optimizer)
-                    #         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
-                    #         scaler.step(optimizer)
-                    #         scaler.update()
-                    #     else:
-                    #         loss.backward()
-                    #         optimizer.step()
-                        
-                        
-                        # if model.model_type != "Transformer":
-                        #     model.detach_states()
-                        # loss = 0
-                
-                
-                # if t == t_end -1:
-                #     # with torch.no_grad():
-                #     #     if video_writer:
-                #     #         for q in range(attn_weights.shape[1]):
-                #     #             plot_attention_map(attn_weights, events, 0, q, depth[0])
-                #     break
-                # del  outputs, depth, events, kerneled
-
-            batch_loss = sum(loss_avg)/len(loss_avg)
-            epoch_loss.append(batch_loss)
-            with open(error_file, "a") as f:
-                f.write(f"Epoch {epoch}, Batch {batch_step} / {len(loader)}, Loss: {batch_loss}, LR: {optimizer.param_groups[0]['lr']}\n")
-            video_writer.release() if video_writer else None   
-            if model.model_type != "Transformer":
-                model.reset_states()            
-            batch_tqdm.update(1)
+                with open(error_file, "a") as f:
+                    f.write(f"Epoch {epoch}, Batch {batch_step} / {len(loader)}, Loss: {batch_loss}, LR: {optimizer.param_groups[0]['lr']}\n")
+                video_writer.release() if video_writer else None   
+                if model.model_type != "Transformer":
+                    model.reset_states()            
+                batch_tqdm.update(1)
             batch_tqdm.set_postfix({"loss": batch_loss})
            
         batch_tqdm.close()
+    if len(loss_MSE) > 0:
+        print(f"Epoch {epoch}, Loss: {sum(epoch_loss)/len(epoch_loss)}, MSE: {sum(loss_MSE)/len(loss_MSE)}, SSIM: {sum(loss_SSIM)/len(loss_SSIM)}")
     return sum(epoch_loss)/len(epoch_loss)
 
 def main():
-    batch_size = 20
+    batch_size = 12
     network = "BOBWLSTM" # LSTM, Transformer, BOBWFF, BOBWLSTM
     
 
@@ -238,16 +189,17 @@ def main():
     train_dataset = EventDepthDataset(data_path+"/train/", tsne=False)
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=loading_method)
     test_dataset = EventDepthDataset(data_path+"/test/", tsne=False)
-    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=False, collate_fn=loading_method)
+    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=10 * batch_size, shuffle=False, collate_fn=loading_method)
     epoch_checkpoint = 0
     save_path = f"{results_path}/{network}"
     model = BestOfBothWorld(model_type=network)
     if checkpoint_path:
-        checkpoint_file = f'{checkpoint_path}/model_epoch_3_BOBWLSTM_add.pth'
-        epoch_checkpoint = int(checkpoint_file.split("_")[2]) + 1
+        checkpoint_file = f'{checkpoint_path}/model_epoch_4_{network}.pth'
+        
         print(f"Loading checkpoint from {checkpoint_file}")
         try:
             model.load_state_dict(torch.load(checkpoint_file, map_location=device))
+            epoch_checkpoint = int(checkpoint_file.split("_")[2]) + 1
         except:
             print("Checkpoint not found, starting from scratch")
     model.to(device)
@@ -255,7 +207,7 @@ def main():
     # criterion = torch.nn.SmoothL1Loss()
     criterion = lpips.LPIPS(net='alex')
     criterion.to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
 
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10, eta_min=1e-6)  # 10 = total number of epochs
     test_only = False
@@ -263,21 +215,24 @@ def main():
     for epoch in range(100):
         if epoch >= epoch_checkpoint:
             scaler = torch.amp.GradScaler(device=device)   
-            if not test_only:      
+            if not test_only:     
+ 
                 train_loss = evaluation(model, train_loader, optimizer, epoch, criterion, train=True, save_path=save_path, scaler=scaler)
                 test_loss = evaluation(model, test_loader, optimizer, epoch, criterion= criterion, train=False, save_path=save_path , scaler=scaler)
-            
+
                 if test_loss < min_loss and not test_only:
                     min_loss = test_loss
-                    torch.save(model.state_dict(), f'{checkpoint_path}/model_epoch_{epoch}_{model.model_type}_{model.method}.pth')
+                    torch.save(model.state_dict(), f'{checkpoint_path}/model_epoch_{epoch}_{model.model_type}_best.pth')
+                torch.save(model.state_dict(), f'{checkpoint_path}/model_epoch_{epoch}_{model.model_type}.pth')
+
             ## divide by 10 the lr at each epocj
 
                 print(f"Epoch {epoch + epoch_checkpoint}, Train Loss: {train_loss:.4f}, Test Loss: {test_loss:.4f}")
-                scheduler.step()
+                exit()
             else:
                 test_loss = final_inference(model, test_loader, criterion, save_path=save_path)
                 break
-
+        scheduler.step()
 if __name__ == "__main__":
     
     main()

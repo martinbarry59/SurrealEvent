@@ -5,7 +5,7 @@ from  .EventSurrealLayers import Encoder, Decoder, ConvLSTM
 from utils.functions import eventstohistogram
 import math
 class BestOfBothWorld(nn.Module):
-    def __init__(self, input_dim=4, input_channels = 2, model_type = "BOBWFF", embed_dim=128, depth=6, heads=4, width=346, height=260, num_queries=16):
+    def __init__(self, input_dim=4, input_channels = 2, model_type = "BOBWFF", embed_dim=256, depth=12, heads=8, width=346, height=260, num_queries=64):
         super().__init__()
         self.width = width
         self.height = height
@@ -146,5 +146,4 @@ class BestOfBothWorld(nn.Module):
             outputs.append(self.final_conv(x))
         outputs = torch.cat(outputs, dim=1)
 
-        return outputs, encodings
-
+        return outputs, encodings.detach()

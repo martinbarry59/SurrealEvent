@@ -10,12 +10,16 @@ import torch.nn.functional as F
 from models.TransformerEventSurreal import EventTransformer
 from models.BOBVEG import BestOfBothWorld
 from utils.dataloader import EventDepthDataset, CNN_collate, Transformer_collate
-import cv2
 from config import data_path, results_path, checkpoint_path
 import os
 import shutil
-from torch.amp import autocast
-
+from ignite.metrics import SSIM
+from ignite.engine import Engine
+def eval_step(engine, batch):
+        return batch
+default_evaluator = Engine(eval_step)
+SSIM_metric = SSIM(data_range=1.0)
+SSIM_metric.attach(default_evaluator, 'ssim')
 def variance_loss(x, eps=1e-4):
     # x: [B, D]
     std = torch.sqrt(x.var(dim=0) + eps)
@@ -184,27 +188,38 @@ def compute_LPIPS_loss(predictions, depths, criterion):
             TC_loss = loss_t * loss_est
             loss += 50 * TC_loss / predictions.shape[1]
     return loss / predictions.shape[1]
-def update(loss, model, optimizer, scaler):
-    scaler.scale(loss).backward()
+
+
+def update(model, optimizer, scaler):
+    
     scaler.unscale_(optimizer)
     # torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
     scaler.step(optimizer)
     scaler.update()
-    model.detach_states()
+    
+
+
 def sequence_for_LSTM(data, model, criterion, optimizer, device,
                     train = True, scaler = None,
-                    len_videos=1188, training_steps=30, block_update=50, rand_step=True,
+                    len_videos=1188, training_steps=300, block_update=25, rand_step=True,
                     video_writer=None):
     if rand_step:
         step_size =  torch.randint(1, 10, (1,)).item()
     else:
         ## fixed step size
         step_size = 1
-    
-    N_update = int(training_steps / block_update)
-    t_start = random.randint(10, len_videos - N_update * block_update)
+    if train:
+        N_update = int(training_steps / block_update)
+        t_start = random.randint(10, len_videos - N_update * block_update)
+    else:
+        N_update = 1
+        t_start = 10
     loss_avg = []
+    loss_MSE = []
+    loss_SSIM = []
+    # print(f"Starting training from {t_start} for {N_update} updates with block size {block_update} and step size {step_size}")
+    optimizer.zero_grad()
     for n in range(N_update):
         
         start_seq = t_start + n * block_update * step_size
@@ -229,21 +244,35 @@ def sequence_for_LSTM(data, model, criterion, optimizer, device,
                     flattened_encodings.cpu().numpy()
                 )
                 plotly_TSNE(tsne, labels, video_labels, f"{model.model_type}")
-        # MSE_loss = F.mse_loss(outputs, depth.unsqueeze(1).repeat(1, 3, 1, 1))
+        
+        
         ## compute SSIM loss
         # SSIM_loss = torch.torchev
         loss = compute_LPIPS_loss(predictions, depths, criterion)
-        print(f"Loss: {loss}")
-       
-        
-        loss_avg.append(loss.item())
+        # if not train:
         if train:
-            update(loss, model, optimizer, scaler)
+            scaler.scale(loss).backward()
+        model.detach_states()
+        loss_avg.append(loss.item())
+        del loss, encodings
+        with torch.no_grad():
+            predictions = predictions.view(-1, 1, predictions.shape[-2], predictions.shape[-1]).detach()
+            depths = depths.view(-1, 1, depths.shape[-2], depths.shape[-1]).detach()
+            MSE = F.mse_loss(predictions, depths)
+            loss_MSE.append(MSE.item())
+            ## send depths to same type as predictions
+            depths = depths.type_as(predictions)
+            state = default_evaluator.run([[predictions, depths]])
+            loss_SSIM.append(state.metrics['ssim'])  
+        
+        
+    if train:
+        update(model, optimizer, scaler)
             
         # if n == 0:
         #     check_CPC_representation_collapse(predictions, encodings)
     model.reset_states()
-    return loss_avg
+    return loss_avg, loss_MSE, loss_SSIM
 def sequence_for_LSTM_CPC(data, model, criterion, optimizer, device,
                     train = True, scaler = None,
                     len_videos=1188, training_steps=300, block_update=5, rand_step=True
