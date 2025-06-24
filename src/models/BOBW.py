@@ -128,12 +128,12 @@ class BestOfBothWorld(nn.Module):
         timed_features = []
         for events, mask in zip(event_sequence, mask_sequence):
             transformer_encoder = self.transformer_forward(events, mask)
-
-            hist_events = eventstohistogram(events)
+            hist_events = eventstohistogram(events, self.height, self.width)
             CNN_encoder, feats = self.encoder(hist_events)
             timed_features.append(feats)
         # Concatenate the outputs from the transformer and CNN
-            x = torch.cat([transformer_encoder, CNN_encoder], dim=1)
+            interpoted = F.interpolate(CNN_encoder, size=(self.mheight, self.mwidth), mode='bilinear', align_corners=False)
+            x = torch.cat([transformer_encoder, interpoted], dim=1)
             lstm_inputs.append(x)
         lstm_inputs = torch.stack(lstm_inputs, dim=1)
         encodings = self.convlstm(lstm_inputs)
