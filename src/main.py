@@ -194,7 +194,7 @@ def main():
     save_path = f"{results_path}/{network}"
     model = BestOfBothWorld(model_type=network)
     if checkpoint_path:
-        checkpoint_file = f'{checkpoint_path}/model_epoch_4_{network}.pth'
+        checkpoint_file = f'{checkpoint_path}/model_epoch_5_{network}.pth'
         
         print(f"Loading checkpoint from {checkpoint_file}")
         try:
