@@ -36,45 +36,49 @@ class ConvLSTM(nn.Module):
 
         self.num_layers = num_layers
         self.hidden_dims = hidden_dims
-
+        self.reset_hidden()
         self.cells = nn.ModuleList()
         for i in range(num_layers):
             cur_input_dim = input_dim if i == 0 else hidden_dims[i-1]
             self.cells.append(
                 ConvLSTMCell(cur_input_dim, hidden_dims[i], kernel_size, bias)
             )
-        self.reset_hidden()
 
     def forward(self, input_seq):
         """
         input_seq: (batch, seq_len, channels, height, width)
+        hidden: tuple of (h, c) for all layers, each is a list of tensors
+        Returns:
+            output_seq: (batch, seq_len, hidden_dim_last, height, width)
         """
-        batch_size, _, height, width = input_seq.size()
-        if self.h is None or self.c is None:
+        batch_size, seq_len, _, height, width = input_seq.size()
+        if self.h is None:
             self._init_hidden(batch_size, height, width, input_seq.device)
 
-        x = input_seq
-        for i, cell in enumerate(self.cells):
-            self.h[i], self.c[i] = cell(x, (self.h[i], self.c[i]))
-            x = self.h[i]
-        
 
-        return self.h[-1]  # return the last layer's output
+        outputs = []
+        for t in range(seq_len):
+            x = input_seq[:, t]
+            for i, cell in enumerate(self.cells):
+                self.h[i], self.c[i] = cell(x, (self.h[i], self.c[i]))
+                x = self.h[i]
+            outputs.append(self.h[-1].unsqueeze(1))  # collect output from last layer
+
+        output_seq = torch.cat(outputs, dim=1)  # (batch, seq_len, hidden_dim_last, height, width)
+        return output_seq
+
+    def _init_hidden(self, batch_size, height, width, device):
+        self.h = []
+        self.c = []
+        for hidden_dim in self.hidden_dims:
+            self.h.append(torch.zeros(batch_size, hidden_dim, height, width, device=device))
+            self.c.append(torch.zeros(batch_size, hidden_dim, height, width, device=device))
     def reset_hidden(self):
         self.h = None
         self.c = None
-    def _init_hidden(self, batch_size, height, width, device):
-        h = []
-        c = []
-        for hidden_dim in self.hidden_dims:
-            h.append(torch.zeros(batch_size, hidden_dim, height, width, device=device))
-            c.append(torch.zeros(batch_size, hidden_dim, height, width, device=device))
-        self.h = h
-        self.c = c
     def detach_hidden(self):
-        for i in range(self.num_layers):
-            self.h[i].detach_()
-            self.c[i].detach_()
+        self.h = [h.detach() for h in self.h]
+        self.c = [c.detach() for c in self.c]
 class Encoder(nn.Module):
     def __init__(self, in_channels, out_channels =None):
         super(Encoder, self).__init__()

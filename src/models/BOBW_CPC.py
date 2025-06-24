@@ -11,7 +11,7 @@ class BestOfBothWorld(nn.Module):
         self.height = height
         self.num_queries = num_queries
         self.model_type = model_type
-
+        self.temperature = nn.Parameter(torch.tensor(0.07))  # start from default
         self.method = "add"
         # Embed each event (t, x, y, p)
         add_channels = 1 if "FF" in self.model_type else 0
@@ -106,11 +106,16 @@ class BestOfBothWorld(nn.Module):
             t_min = events[:, :, 0].min(dim=1, keepdim=True)[0]
             t_max = events[:, :, 0].max(dim=1, keepdim=True)[0]
             times = (events[:, :, 0] - t_min) / (t_max - t_min + 1e-6)
+            
+
             events[:, :, 0] = times
             t_idx = (times * (self.temporal_pe.shape[1] - 1)).long().clamp(0, self.temporal_pe.shape[1] - 1)  # [B, N]
             temporal_encoding = self.temporal_pe[0, t_idx]  # [B, N, D]
+            # print("times",torch.min(times), torch.max(times), torch.min(temporal_encoding), torch.max(temporal_encoding))
         spatial_pe = self.spatial_pe(events[:, :, 1:3])
         x = self.embedding(events) + temporal_encoding + spatial_pe
+
+        # print("x", torch.min(x), torch.max(x))
         # Transformer over tokens
         x = self.transformer(x, src_key_padding_mask=~mask)  # [B, N, D]
         # Attention pooling
@@ -143,6 +148,8 @@ class BestOfBothWorld(nn.Module):
             x = self.convlstm(x)
         encoding = self.final_encoder(x)
         # Decode to full self.resolution depth map
+        # print("encoding", torch.min(encoding), torch.max(encoding))
         prediction = self.prediction_head(encoding) 
+        # print("prediction", torch.min(prediction), torch.max(prediction))
         return encoding, prediction
 

@@ -1,91 +1,67 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
 import math
 class EventTransformer(nn.Module):
-    def __init__(self, input_dim=4, embed_dim=128, depth=6, heads=4, width=346, height=260, num_queries=16):
+    def __init__(self, input_dim=4, embed_dim=128, depth=6, heads=16, num_queries=32, lstm_hidden=256, lstm_layers=1):
         super().__init__()
-        self.width = width
-        self.height = height
-        self.num_queries = num_queries
-        self.model_type = "Transformer"
-
-        self.method = "Attention"
-        # Embed each event (t, x, y, p)
-        self.embedding = nn.Linear(input_dim, embed_dim)
-
-        # Positional encodings for spatial and temporal info
-        self.temporal_pe = self._build_sinusoidal_encoding(embed_dim)
-
-        # Learned spatial positional encoding
+        self.model_type = "TransLSTM"
+        self.embed = nn.Linear(input_dim, embed_dim)
+        temporal_pe = self._build_sinusoidal_encoding(embed_dim)
+        self.register_buffer("temporal_pe", temporal_pe, persistent=False)
         self.spatial_pe = nn.Sequential(
             nn.Linear(2, embed_dim),
             nn.ReLU(),
             nn.Linear(embed_dim, embed_dim)
         )
 
-        # Transformer Encoder
         encoder_layer = nn.TransformerEncoderLayer(d_model=embed_dim, nhead=heads, batch_first=True)
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=depth)
 
-        # Learnable attention pooling queries
-        self.attn_pool_queries = nn.Parameter(torch.randn(1, num_queries, embed_dim))
-        self.attn_proj = nn.MultiheadAttention(embed_dim=embed_dim, num_heads=heads, batch_first=True)
+        self.pool_queries = nn.Parameter(torch.randn(1, num_queries, embed_dim))
+        self.attn_pool = nn.MultiheadAttention(embed_dim, heads, batch_first=True, dropout=0.1)
 
-        self.resolution = 8 ## the lower the more parameters
-        self.channels = 32
-        # Projection to spatial latent map from pooled tokens
-        self.project_to_grid = nn.Sequential(
-            nn.Linear(embed_dim * num_queries, (self.height // self.resolution) * (self.width // self.resolution) * self.channels)
+        self.lstm = nn.LSTM(embed_dim * num_queries, lstm_hidden, num_layers=lstm_layers, batch_first=True)
+        self.projector = nn.Sequential(
+            nn.Linear(lstm_hidden, lstm_hidden),
+            nn.ReLU(),
+            nn.Linear(lstm_hidden, lstm_hidden)
         )
 
-        # Image decoder
-        self.decoder = torch.nn.Sequential()
-
-        n_layers = torch.log2(torch.Tensor([self.resolution])).int().item() - 1   # Number of upsampling layers
-
-        for n in range(n_layers):
-            if n != n_layers - 1:
-                self.decoder.append(nn.ConvTranspose2d(self.channels //(2 ** n), self.channels // (2 ** (n+1)), kernel_size=4, stride=2, padding=1))
-                self.decoder.append(nn.ReLU())
-            else:
-                self.decoder.append(nn.ConvTranspose2d(self.channels // (2 ** n), 1, kernel_size=4, stride=2, padding=1))
-                self.decoder.append(nn.Sigmoid())
     def _build_sinusoidal_encoding(self, dim, max_len=10000):
         pe = torch.zeros(max_len, dim)
-        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        position = torch.arange(0, max_len).unsqueeze(1).float()
         div_term = torch.exp(torch.arange(0, dim, 2).float() * (-math.log(10000.0) / dim))
         pe[:, 0::2] = torch.sin(position * div_term)
         pe[:, 1::2] = torch.cos(position * div_term)
-        pe = pe.unsqueeze(0)  # shape [1, max_len, dim]
-        return pe
-    def forward(self, events, mask):
-        # events: [B, N, 4], mask: [B, N] (True = valid, False = padding)
-        B, N, _ = events.shape
+        return pe.unsqueeze(0)  # [1, max_len, dim]
 
-        # Token embedding + positional encoding
-        x_base = self.embedding(events)  # [B, N, D]
+    def forward(self, event_sequence, mask_sequence):
+        # event_sequence: list of length T, each [B, N, 4]
+        # mask_sequence: list of length T, each [B, N]
+        lstm_inputs = []
+        for events, mask in zip(event_sequence, mask_sequence):
+            B, N, _ = events.shape
+            times = events[:, :, 0]
+            times = (times - times.min()) / (times.max() - times.min() + 1e-6)
+            ## zeroing all times with probability 0.1
+            # if torch.rand(1).item() < 0.1:
+            #     times = torch.zeros_like(times)
+            events[:, :, 0] = times
+            x = self.embed(events)
+            pos_t = self.temporal_pe[:, (times * 9999).long().clamp(0, 9999)]
+            pos_xy = self.spatial_pe(events[:, :, 1:3])
+            x = x + pos_t.squeeze(0) + pos_xy
+            x = self.transformer(x, src_key_padding_mask=~mask)
 
-        # Sinusoidal temporal encoding
-        t_norm = (events[:, :, 0] * 9999).long().clamp(0, 9999)  # scale time to [0, 9999]
-        pos_time = self.temporal_pe[:, t_norm]  # [1, B, N, D] -> [B, N, D]
+            queries = self.pool_queries.expand(B, -1, -1)
+            pooled, _ = self.attn_pool(queries, x, x, key_padding_mask=~mask)
+            lstm_inputs.append(pooled.flatten(start_dim=1))
 
-        pos_xy = self.spatial_pe(events[:, :, 1:3])  # [B, N, D]
-        x = x_base + pos_time + pos_xy  # [B, N, D]
-        
-        # Transformer over tokens
-        x = self.transformer(x, src_key_padding_mask=~mask)  # [B, N, D]
-        # Attention pooling
-        queries = self.attn_pool_queries.expand(B, -1, -1)  # [B, num_queries, D]
-        pooled, attn_weights = self.attn_proj(queries, x, x, key_padding_mask=~mask)  # [B, num_queries, D]
-        
-        # Flatten pooled tokens and project to latent spatial grid
-        pooled_flat = pooled.flatten(start_dim=1)  # [B, num_queries * D]
-        x_latent = self.project_to_grid(pooled_flat)  # [B, H'*W']
-        x_latent = x_latent.view(B, self.channels, self.height // self.resolution, self.width // self.resolution)  # [B, 1, H', W']
+        lstm_inputs = torch.stack(lstm_inputs, dim=1)  # [B, T, D*num_queries]
+        lstm_out, _ = self.lstm(lstm_inputs)
+        final = self.projector(lstm_out)  # [B, T, D]
+        return final, lstm_out # For CPC
 
-        # Decode to full self.resolution depth map
-        depth_imgs = self.decoder(x_latent)  # [B, 1, H, W]
-        depth_imgs = F.interpolate(depth_imgs, size=(self.height, self.width), mode='bilinear', align_corners=False)
-        return depth_imgs, attn_weights
 
