@@ -4,6 +4,7 @@ import torch.nn.functional as F
 from  .EventSurrealLayers import Encoder, Decoder, ConvLSTM
 from utils.functions import eventstohistogram
 import math
+import tqdm
 class BestOfBothWorld(nn.Module):
     def __init__(self, input_dim=4, input_channels = 2, model_type = "BOBWFF", embed_dim=256, depth=12, heads=8, width=346, height=260, num_queries=64):
         super().__init__()
@@ -126,6 +127,7 @@ class BestOfBothWorld(nn.Module):
         
         lstm_inputs = []
         timed_features = []
+
         for events, mask in zip(event_sequence, mask_sequence):
             # transformer_encoder = self.transformer_forward(events, mask)
             # print("transformer_encoder shape:", transformer_encoder.shape)
@@ -137,14 +139,15 @@ class BestOfBothWorld(nn.Module):
         # Concatenate the outputs from the transformer and CNN
             interpoted = F.interpolate(CNN_encoder, size=(self.mheight, self.mwidth), mode='bilinear', align_corners=False)
             x = torch.cat([transformer_encoder, interpoted], dim=1)
+
             lstm_inputs.append(x)
         lstm_inputs = torch.stack(lstm_inputs, dim=1)
         encodings = self.convlstm(lstm_inputs)
         # Decode to full self.resolution depth map
         outputs = []
         
-        for t in range(encodings.shape[1]):
-            x = self.decoder(encodings[:,t], timed_features[t])
+        for t in tqdm.tqdm(range(encodings.shape[1])):
+            x = self.decoder(0 * encodings[:,t], timed_features[t])
         
             outputs.append(self.final_conv(x))
         outputs = torch.cat(outputs, dim=1)

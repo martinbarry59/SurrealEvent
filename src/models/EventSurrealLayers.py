@@ -63,7 +63,7 @@ class ConvLSTM(nn.Module):
                 self.h[i], self.c[i] = cell(x, (self.h[i], self.c[i]))
                 x = self.h[i]
             outputs.append(self.h[-1].unsqueeze(1))  # collect output from last layer
-
+            # self._init_hidden(batch_size, height, width, input_seq.device)  # reset hidden state for next time step
         output_seq = torch.cat(outputs, dim=1)  # (batch, seq_len, hidden_dim_last, height, width)
         return output_seq
 
