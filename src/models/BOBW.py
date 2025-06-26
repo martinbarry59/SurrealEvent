@@ -11,7 +11,7 @@ class BestOfBothWorld(nn.Module):
         self.height = height
         self.num_queries = num_queries
         self.model_type = model_type
-
+        
         self.method = "add"
         # Embed each event (t, x, y, p)
         add_channels = 1 if "FF" in self.model_type else 0
@@ -123,11 +123,14 @@ class BestOfBothWorld(nn.Module):
         return x_latent
     def forward(self, event_sequence, mask_sequence):
         # events: [B, N, 4], mask: [B, N] (True = valid, False = padding)
-
+        
         lstm_inputs = []
         timed_features = []
         for events, mask in zip(event_sequence, mask_sequence):
-            transformer_encoder = self.transformer_forward(events, mask)
+            # transformer_encoder = self.transformer_forward(events, mask)
+            # print("transformer_encoder shape:", transformer_encoder.shape)
+            transformer_encoder = torch.zeros((events.shape[0], self.channels, self.mheight, self.mwidth), device=events.device)
+            
             hist_events = eventstohistogram(events, self.height, self.width)
             CNN_encoder, feats = self.encoder(hist_events)
             timed_features.append(feats)
