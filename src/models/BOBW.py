@@ -4,6 +4,7 @@ import torch.nn.functional as F
 from  .EventSurrealLayers import Encoder, Decoder, ConvLSTM
 from utils.functions import eventstohistogram
 import math
+import tqdm
 class BestOfBothWorld(nn.Module):
     def __init__(self, input_dim=4, input_channels = 2, model_type = "BOBWFF", embed_dim=256, depth=12, heads=8, width=346, height=260, num_queries=64):
         super().__init__()
@@ -11,7 +12,7 @@ class BestOfBothWorld(nn.Module):
         self.height = height
         self.num_queries = num_queries
         self.model_type = model_type
-
+        
         self.method = "add"
         # Embed each event (t, x, y, p)
         add_channels = 1 if "FF" in self.model_type else 0
@@ -123,25 +124,30 @@ class BestOfBothWorld(nn.Module):
         return x_latent
     def forward(self, event_sequence, mask_sequence):
         # events: [B, N, 4], mask: [B, N] (True = valid, False = padding)
-
+        
         lstm_inputs = []
         timed_features = []
-        for events, mask in zip(event_sequence, mask_sequence):
-            transformer_encoder = self.transformer_forward(events, mask)
 
-            hist_events = eventstohistogram(events)
+        for events, mask in zip(event_sequence, mask_sequence):
+            # transformer_encoder = self.transformer_forward(events, mask)
+            # print("transformer_encoder shape:", transformer_encoder.shape)
+            transformer_encoder = torch.zeros((events.shape[0], self.channels, self.mheight, self.mwidth), device=events.device)
+            
+            hist_events = eventstohistogram(events, self.height, self.width)
             CNN_encoder, feats = self.encoder(hist_events)
             timed_features.append(feats)
         # Concatenate the outputs from the transformer and CNN
-            x = torch.cat([transformer_encoder, CNN_encoder], dim=1)
+            interpoted = F.interpolate(CNN_encoder, size=(self.mheight, self.mwidth), mode='bilinear', align_corners=False)
+            x = torch.cat([transformer_encoder, interpoted], dim=1)
+
             lstm_inputs.append(x)
         lstm_inputs = torch.stack(lstm_inputs, dim=1)
         encodings = self.convlstm(lstm_inputs)
         # Decode to full self.resolution depth map
         outputs = []
         
-        for t in range(encodings.shape[1]):
-            x = self.decoder(encodings[:,t], timed_features[t])
+        for t in tqdm.tqdm(range(encodings.shape[1])):
+            x = self.decoder(0 * encodings[:,t], timed_features[t])
         
             outputs.append(self.final_conv(x))
         outputs = torch.cat(outputs, dim=1)

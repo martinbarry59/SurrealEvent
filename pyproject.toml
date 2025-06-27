@@ -3,16 +3,11 @@ name = "surreal"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = "==3.9.*"
 dependencies = [
-    "h5py>=3.13.0",
-    "lpips>=0.1.4",
-    "matplotlib>=3.10.3",
+    "dv-processing>=1.7.9",
     "opencv-python>=4.11.0.86",
-    "plotly>=6.1.2",
-    "pytorch-ignite>=0.5.2",
-    "scikit-learn>=1.7.0",
-    "torch>=2.6.0",
-    "torchvision>=0.21.0",
-    "tqdm>=4.67.1",
+    "torch>=2.7.1",
+    "torchvision>=0.22.1",
+    "numpy<2.0"
 ]
