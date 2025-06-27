@@ -75,6 +75,7 @@ class EventDepthDataset(Dataset):
         events = events[:, :4]
         events[:, 1] = events[:, 1] / 346
         events[:, 2] = events[:, 2] / 260
+        
         if self.tsne:
             return events, depth, self.events_files[idx].split("/")[-2]  # return the folder name as label
         else:
@@ -82,6 +83,14 @@ class EventDepthDataset(Dataset):
 
 def sampling_events(t_old, t_new, events, old_events):
     max_events = 1000
+    ## add white noised events
+    N_white = torch.randint(0, 10, (1,)).item()
+    white_events = torch.zeros((N_white, 4))
+    white_events[:, 0] = t_old + torch.rand(N_white) * (t_new - t_old)
+    white_events[:, 1] = torch.rand(N_white) * 0.99  # x
+    white_events[:, 2] = torch.rand(N_white)* 0.99  # y
+    white_events[:, 3] = torch.randint(0, 2, (N_white,)) * 2 - 1  # polaritys
+    events = torch.cat([events, white_events], dim=0)
     sample =  events[(events[:, 0] >= t_old )* (events[:, 0] < t_new)]
 
     
