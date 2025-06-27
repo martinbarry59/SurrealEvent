@@ -194,7 +194,7 @@ def main():
     save_path = f"{results_path}/{network}"
     model = BestOfBothWorld(model_type=network)
     if checkpoint_path:
-        checkpoint_file = f'{checkpoint_path}/model_epoch_5_{network}.pth'
+        checkpoint_file = f'{checkpoint_path}/model_epoch_7_{network}.pth'
         
         print(f"Loading checkpoint from {checkpoint_file}")
         try:
@@ -227,7 +227,7 @@ def main():
 
             ## divide by 10 the lr at each epocj
 
-                print(f"Epoch {epoch + epoch_checkpoint}, Train Loss: {train_loss:.4f}, Test Loss: {test_loss:.4f}")
+                print(f"Epoch {epoch}, Train Loss: {train_loss:.4f}, Test Loss: {test_loss:.4f}")
                 exit()
             else:
                 test_loss = final_inference(model, test_loader, criterion, save_path=save_path)
