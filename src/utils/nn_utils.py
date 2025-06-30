@@ -5,7 +5,6 @@ from utils.plot_utils import plotly_TSNE
 from utils.dataloader import EventDepthDataset, CNN_collate, Transformer_collate, get_data
 import torch
 import numpy as np
-import tqdm
 import torch.nn.functional as F
 from models.TransformerEventSurreal import EventTransformer
 from models.BOBVEG import BestOfBothWorld
@@ -73,7 +72,6 @@ def forward_feed(model, data, device, step_size=1, start_seq=0, block_update=30,
         seq_labels = np.array(seq_labels)
     predictions, encodings = model(seq_events, seq_masks)
     with torch.no_grad():
-        print(video_writer)        
         if video_writer:
             # for t in range(predictions.shape[1]):
             for t in range(predictions.shape[1]):
@@ -127,9 +125,9 @@ def sequence_for_LSTM(data, model, criterion, optimizer, device,
         N_update = int(training_steps / block_update)
         t_start = random.randint(10, len_videos - N_update * block_update)
     else:
-        N_update = 1
+        training_steps = len_videos- 10
+        N_update = int(training_steps / block_update)
         t_start = 10
-        block_update = -1
     loss_avg = []
     loss_MSE = []
     loss_SSIM = []

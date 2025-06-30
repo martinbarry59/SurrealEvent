@@ -95,7 +95,7 @@ def sampling_events(t_old, t_new, events, old_events):
 
     
     if sample.shape[0] != 0:
-        old_events = torch.cat([old_events, sample], dim=0)
+        old_events = sample#torch.cat([old_events, sample], dim=0)
         if len(old_events) > max_events:
             old_events = old_events[-max_events:]
     

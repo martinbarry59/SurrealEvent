@@ -32,13 +32,12 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
         
         for batch_step, data in enumerate(loader):
             
-            print(f"Batch {batch_step} / {len(loader)}")
             writer_path = f'{save_path}/{tqdm_str}_EPOCH_{epoch}_video_{batch_step}.mp4' if save_path else None
             if save_path and not os.path.exists(writer_path):
                 os.makedirs(os.path.dirname(writer_path), exist_ok=True)
             video_writer = cv2.VideoWriter(writer_path, fourcc, 30, (3*346,260)) if (not train or batch_step % 10==0 and save_path) else None
-            # with torch.amp.autocast(device_type=device.type):
-            loss_avg, loss_MSE, loss_SSIM= sequence_for_LSTM(data, model, criterion, optimizer, device, train, scaler,video_writer = video_writer)
+            with torch.amp.autocast(device_type=device.type):
+                loss_avg, loss_MSE, loss_SSIM = sequence_for_LSTM(data, model, criterion, optimizer, device, train, scaler,video_writer = video_writer)
         
             batch_loss = sum(loss_avg)/len(loss_avg)
             epoch_loss.append(batch_loss)
@@ -62,8 +61,8 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
     return sum(epoch_loss)/len(epoch_loss)
 
 def main():
-    batch_train = 2
-    batch_test = 10 * batch_train
+    batch_train = 18
+    batch_test = 100
     network = "BOBWLSTM" # LSTM, Transformer, BOBWFF, BOBWLSTM
     
 
@@ -75,24 +74,26 @@ def main():
     epoch_checkpoint = 0
     save_path = f"{results_path}/{network}"
     if checkpoint_path:
-        checkpoint_files = glob.glob(f'{checkpoint_path}/model_epoch_*_{network}.pth')
-        if "small" in checkpoint_file:
-            model = BestOfBothWorld(model_type=network, width=360, height = 246,embed_dim=128, depth=6, heads=8, num_queries=16)
-        else:
-            model = BestOfBothWorld(model_type=network, width=360, height = 246,embed_dim=256, depth=12, heads=8, num_queries=64)
-        print(f"Loading checkpoint from {checkpoint_file}")
+        checkpoint_files = glob.glob(f'{checkpoint_path}/model_epoch_*_{network}_small.pth')
+        print(checkpoint_files)
     if checkpoint_files:
         # Extract epoch numbers and find the file with the highest epoch
         def extract_epoch(fp):
             try:
+                print(fp, os.path.basename(fp).split("_")[2])
                 return int(os.path.basename(fp).split("_")[2])
             except Exception:
                 return -1
         checkpoint_file = max(checkpoint_files, key=extract_epoch)
+        if "small" in checkpoint_file:
+            model = BestOfBothWorld(model_type=network, width=346, height = 260, embed_dim=128, depth=6, heads=8, num_queries=16)
+        else:
+            model = BestOfBothWorld(model_type=network, width= 346, height = 260, embed_dim=256, depth=12, heads=8, num_queries=64)
         print(f"Loading checkpoint from {checkpoint_file}")
         try:
             model.load_state_dict(torch.load(checkpoint_file, map_location=device))
             epoch_checkpoint = extract_epoch(checkpoint_file) + 1
+            print(f"Resuming from epoch {epoch_checkpoint}")
         except Exception as e:
             print(f"Checkpoint not found or failed to load: {e}\nStarting from scratch")
     else:
@@ -110,15 +111,19 @@ def main():
     for epoch in range(100):
         if epoch >= epoch_checkpoint:
             scaler = torch.amp.GradScaler(device=device)   
-            if not test_only:     
- 
+            if not test_only:
+
                 train_loss = evaluation(model, train_loader, optimizer, epoch, criterion, train=True, save_path=save_path, scaler=scaler)
                 test_loss = evaluation(model, test_loader, optimizer, epoch, criterion= criterion, train=False, save_path=save_path , scaler=scaler)
 
+                save_string = f'{checkpoint_path}/model_epoch_{epoch}_{model.model_type}'
+                if checkpoint_file is not None and "small" in checkpoint_file:
+                    save_string += "_small"
                 if test_loss < min_loss and not test_only:
                     min_loss = test_loss
-                    torch.save(model.state_dict(), f'{checkpoint_path}/model_epoch_{epoch}_{model.model_type}_best.pth')
-                torch.save(model.state_dict(), f'{checkpoint_path}/model_epoch_{epoch}_{model.model_type}.pth')
+
+                    torch.save(model.state_dict(), f'{save_string}_best.pth')
+                torch.save(model.state_dict(), f'{save_string}.pth')
 
 
                 print(f"Epoch {epoch}, Train Loss: {train_loss:.4f}, Test Loss: {test_loss:.4f}")
