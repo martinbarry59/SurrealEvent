@@ -1,7 +1,36 @@
 
 import torch
 import cv2
+def eventstovoxel(events, height=260, width=346, bins=5):
+    """
+    Converts a batch of events into a voxel grid.
+    
+    Args:
+        events: [B, N, 4] - (t, x, y, p) with t ∈ [0, 1], x ∈ [0, 1], y ∈ [0, 1]
+        height, width: spatial resolution
+        bins: number of time bins
 
+    Returns:
+        voxel: [B, 2 * bins, H, W] voxel grid with separate channels for polarities
+    """
+    B, N, _ = events.shape
+    device = events.device
+
+    # Normalize and quantize to voxel indices
+    x = (events[:, :, 1] * width).long().clamp(0, width - 1)
+    y = (events[:, :, 2] * height).long().clamp(0, height - 1)
+    t = (events[:, :, 0] * bins).long().clamp(0, bins - 1)
+    p = events[:, :, 3].long().clamp(0, 1)  # polarity: 0 or 1
+
+    # Final channel index: [B, N]
+    c = t + p * bins  # separate channels for each polarity
+
+    voxel = torch.zeros(B, 2 * bins, height, width, device=device)
+    batch_idx = torch.arange(B, device=device).unsqueeze(1).expand(-1, N)
+
+    voxel.index_put_((batch_idx, c, y, x), torch.ones_like(t, dtype=torch.float), accumulate=True)
+
+    return voxel
 def eventstohistogram(events, height=260, width=346):
         B, N, _ = events.shape
         x = (events[:, :, 1] * width).long().clamp(0, width - 1)

@@ -88,6 +88,12 @@ class BestOfBothWorld(nn.Module):
             self.convlstm.detach_hidden()
         else:
             self.estimated_depth = self.estimated_depth.detach()
+    def sinusoidal_embedding(t, dim):
+        div_term = torch.exp(torch.arange(0, dim, 2).float().to(t.device) * (-math.log(10000.0) / dim))
+        pe = torch.zeros(t.size(0), t.size(1), dim).to(t.device)
+        pe[..., 0::2] = torch.sin(t * div_term)
+        pe[..., 1::2] = torch.cos(t * div_term)
+        return pe
     def _build_sinusoidal_encoding(self, dim, max_len=10000):
         pe = torch.zeros(max_len, dim)
         position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
@@ -128,6 +134,7 @@ class BestOfBothWorld(nn.Module):
         timed_features = []
 
         for events, mask in zip(event_sequence, mask_sequence):
+            
             transformer_encoder = self.transformer_forward(events, mask)
             # print("transformer_encoder shape:", transformer_encoder.shape)
             # transformer_encoder = torch.zeros((events.shape[0], self.channels, self.mheight, self.mwidth), device=events.device)
@@ -146,7 +153,7 @@ class BestOfBothWorld(nn.Module):
         outputs = []
         
         for t in range(encodings.shape[1]):
-            x = self.decoder(0 * encodings[:,t], timed_features[t])
+            x = self.decoder(encodings[:,t], timed_features[t])
         
             outputs.append(self.final_conv(x))
         outputs = torch.cat(outputs, dim=1)

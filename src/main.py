@@ -1,5 +1,6 @@
 
 from models.BOBW import BestOfBothWorld
+from models.ConvLSTM import EConvlstm
 from utils.dataloader import EventDepthDataset, CNN_collate, Transformer_collate
 
 import torch
@@ -63,10 +64,10 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
 def main():
     batch_train = 18
     batch_test = 100
-    network = "BOBWLSTM" # LSTM, Transformer, BOBWFF, BOBWLSTM
+    network = "CONVLSTM" # LSTM, Transformer, BOBWFF, BOBWLSTM
     
 
-    loading_method = CNN_collate if (not ((network =="Transformer") or ("BOBW" in network))) else Transformer_collate
+    loading_method = Transformer_collate
     train_dataset = EventDepthDataset(data_path+"/train/", tsne=True)
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_train, shuffle=True, collate_fn=loading_method)
     test_dataset = EventDepthDataset(data_path+"/test/", tsne=True)
@@ -85,10 +86,13 @@ def main():
             except Exception:
                 return -1
         checkpoint_file = max(checkpoint_files, key=extract_epoch)
-        if "small" in checkpoint_file:
-            model = BestOfBothWorld(model_type=network, width=346, height = 260, embed_dim=128, depth=6, heads=8, num_queries=16)
+        if  "BOBW" in network:
+            if "small" in checkpoint_file:
+                model = BestOfBothWorld(model_type=network, width=346, height = 260, embed_dim=128, depth=6, heads=8, num_queries=16)
+            else:
+                model = BestOfBothWorld(model_type=network, width= 346, height = 260, embed_dim=256, depth=12, heads=8, num_queries=64)
         else:
-            model = BestOfBothWorld(model_type=network, width= 346, height = 260, embed_dim=256, depth=12, heads=8, num_queries=64)
+            model = EConvlstm(model_type=network, width=346, height=260)
         print(f"Loading checkpoint from {checkpoint_file}")
         try:
             model.load_state_dict(torch.load(checkpoint_file, map_location=device))

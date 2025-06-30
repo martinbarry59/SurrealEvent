@@ -94,11 +94,13 @@ def compute_LPIPS_loss(predictions, depths, criterion):
         pred = predictions[:,t]
         enc = depths[:,t]
         loss += criterion(pred, enc).mean()
+        
         if t > 0:
             loss_est = torch.exp(-50 * torch.nn.MSELoss()(depths[:,t], depths[:,t-1]))
             loss_t = F.l1_loss(predictions[:,t], predictions[:,t-1])
             TC_loss = loss_t * loss_est
-            loss += 50 * TC_loss / predictions.shape[1]
+            
+            loss += 50 * TC_loss
     return loss / predictions.shape[1]
 
 

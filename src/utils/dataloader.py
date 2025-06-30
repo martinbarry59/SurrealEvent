@@ -75,6 +75,7 @@ class EventDepthDataset(Dataset):
         events = events[:, :4]
         events[:, 1] = events[:, 1] / 346
         events[:, 2] = events[:, 2] / 260
+        ## normalize time to [0, 1]
         
         if self.tsne:
             return events, depth, self.events_files[idx].split("/")[-2]  # return the folder name as label
