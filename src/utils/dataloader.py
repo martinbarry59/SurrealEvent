@@ -75,7 +75,6 @@ class EventDepthDataset(Dataset):
         events = events[:, :4]
         events[:, 1] = events[:, 1] / 346
         events[:, 2] = events[:, 2] / 260
-        ## normalize time to [0, 1]
         
         if self.tsne:
             return events, depth, self.events_files[idx].split("/")[-2]  # return the folder name as label
@@ -83,18 +82,18 @@ class EventDepthDataset(Dataset):
             return events, depth
 
 def sampling_events(t_old, t_new, events, old_events):
-    max_events = 1000
+    max_events = 5000
     ## add white noised events
-    N_white = torch.randint(0, 10, (1,)).item()
-    white_events = torch.zeros((N_white, 4))
-    white_events[:, 0] = t_old + torch.rand(N_white) * (t_new - t_old)
-    white_events[:, 1] = torch.rand(N_white) * 0.99  # x
-    white_events[:, 2] = torch.rand(N_white)* 0.99  # y
-    white_events[:, 3] = torch.randint(0, 2, (N_white,)) * 2 - 1  # polaritys
-    events = torch.cat([events, white_events], dim=0)
+    # N_white = torch.randint(0, 10, (1,)).item()
+    # white_events = torch.zeros((N_white, 4))
+    # white_events[:, 0] = t_old + torch.rand(N_white) * (t_new - t_old)
+    # white_events[:, 1] = torch.rand(N_white) * 0.99  # x
+    # white_events[:, 2] = torch.rand(N_white)* 0.99  # y
+    # white_events[:, 3] = torch.randint(0, 2, (N_white,)) * 2 - 1  # polaritys
+    # events = torch.cat([events, white_events], dim=0)
     sample =  events[(events[:, 0] >= t_old )* (events[:, 0] < t_new)]
-
-    
+    # for t in sample[:,0]:
+    #     print("{:.30f}".format(t.item()))  # 20 decimal places
     if sample.shape[0] != 0:
         old_events = sample#torch.cat([old_events, sample], dim=0)
         if len(old_events) > max_events:
@@ -115,17 +114,18 @@ def Transformer_collate(batch):
     depths = torch.stack(depths).permute((1,0,2,3))  # [B, T, H, W]
     t_new = 0
     event_histories = [torch.zeros(1,4) for _ in range(depths.shape[0])]
-    
+    step = 1/(30*12)
     for _ in range(depths.shape[0]):
         # continue
-        t_old = t_new
-        t_new = t_old + 1/(30*12)
+        
+        t_start = max(t_new - 4 * step, 0)
+        t_new = t_new + step
         # list of [N_i, 4]
         
         if len(batch[0]) == 2:
-            event_histories = [sampling_events(t_old, t_new, events, event_histories[n]) for n, (events, _) in enumerate(batch)]
+            event_histories = [sampling_events(t_start, t_new, events, event_histories[n]) for n, (events, _) in enumerate(batch)]
         elif len(batch[0]) == 3:
-            event_histories = [sampling_events(t_old, t_new, events, event_histories[n]) for n, (events, _, _) in enumerate(batch)]
+            event_histories = [sampling_events(t_start, t_new, events, event_histories[n]) for n, (events, _, _) in enumerate(batch)]
         
         padded = pad_sequence(event_histories, batch_first=True)  # [B, N_max, 4]
         mask = torch.zeros(padded.shape[:2], dtype=torch.bool)  # [B, N_max]
@@ -148,7 +148,7 @@ def CNN_collate(batch):
         events = event_dropout(events, p=0.05)
         depths.append(remove_border(depth) / 255)  # [T, H, W]
         times = events[:, 0]
-
+        
         x = torch.round(events[:,1] * 346).long()
         y = torch.round(events[:,2] * 260).long()
         polarities = ((events[:, 3] +1)/2).long()

@@ -63,7 +63,7 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
 
 def main():
     batch_train = 18
-    batch_test = 100
+    batch_test = 150
     network = "CONVLSTM" # LSTM, Transformer, BOBWFF, BOBWLSTM
     
 
@@ -86,7 +86,7 @@ def main():
             except Exception:
                 return -1
         checkpoint_file = max(checkpoint_files, key=extract_epoch)
-        if  "BOBW" in network:
+        if "BOBW" in network:
             if "small" in checkpoint_file:
                 model = BestOfBothWorld(model_type=network, width=346, height = 260, embed_dim=128, depth=6, heads=8, num_queries=16)
             else:
@@ -102,6 +102,7 @@ def main():
             print(f"Checkpoint not found or failed to load: {e}\nStarting from scratch")
     else:
         print("No checkpoint files found, starting from scratch")
+        model = EConvlstm(model_type=network, width=346, height=260) if "CONVLSTM" in network else BestOfBothWorld(model_type=network, width=346, height=260, embed_dim=256, depth=12, heads=8, num_queries=64)
     model.to(device)
 
     # criterion = torch.nn.SmoothL1Loss()

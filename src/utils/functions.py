@@ -17,18 +17,19 @@ def eventstovoxel(events, height=260, width=346, bins=5):
     device = events.device
 
     # Normalize and quantize to voxel indices
+    
     x = (events[:, :, 1] * width).long().clamp(0, width - 1)
     y = (events[:, :, 2] * height).long().clamp(0, height - 1)
     t = (events[:, :, 0] * bins).long().clamp(0, bins - 1)
-    p = events[:, :, 3].long().clamp(0, 1)  # polarity: 0 or 1
-
+    
+    p = events[:, :, 3].long()
     # Final channel index: [B, N]
-    c = t + p * bins  # separate channels for each polarity
+    c = t
 
-    voxel = torch.zeros(B, 2 * bins, height, width, device=device)
+    voxel = torch.zeros(B, bins, height, width, device=device)
     batch_idx = torch.arange(B, device=device).unsqueeze(1).expand(-1, N)
 
-    voxel.index_put_((batch_idx, c, y, x), torch.ones_like(t, dtype=torch.float), accumulate=True)
+    voxel.index_put_((batch_idx, c, y, x), (2* p -1) * torch.ones_like(t, dtype=torch.float), accumulate=True)
 
     return voxel
 def eventstohistogram(events, height=260, width=346):

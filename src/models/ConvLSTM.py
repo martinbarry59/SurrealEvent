@@ -12,7 +12,7 @@ class EConvlstm(nn.Module):
         
         self.method = "add"
         # Embed each event (t, x, y, p)
-        self.encoder = Encoder(input_channels * 5)
+        self.encoder = Encoder( 5)
         self.encoder_channels = [32, 24, 32, 64, 1280]
         
         self.mheight = 9
@@ -58,9 +58,16 @@ class EConvlstm(nn.Module):
         lstm_inputs = []
         timed_features = []
 
-        for events in zip(event_sequence):
-            events[:, 0] = (events[:, 0] - events[:, 0].min()) / (events[:, 0].max() - events[:, 0].min())
-
+        for events in event_sequence:
+            # normalise t per batch
+            
+            min_t = torch.min(events[:, :, 0], dim=1, keepdim=True)[0]
+            max_t = torch.max(events[:, :, 0], dim=1, keepdim=True)[0]
+            denom = (max_t - min_t)
+            # Avoid division by zero, but only where denom is zero
+            denom[denom < 1e-8] = 1.0  # If all times are the same, set denom to 1 to avoid NaN
+            events[:, :, 0] = (events[:, :, 0] - min_t) / denom
+            
             hist_events = eventstovoxel(events, self.height, self.width)
             CNN_encoder, feats = self.encoder(hist_events)
             timed_features.append(feats)
@@ -74,7 +81,7 @@ class EConvlstm(nn.Module):
         outputs = []
         
         for t in range(encodings.shape[1]):
-            x = self.decoder(encodings[:,t], timed_features[t])
+            x = self.decoder(encodings[:, t], timed_features[t])
         
             outputs.append(self.final_conv(x))
         outputs = torch.cat(outputs, dim=1)
