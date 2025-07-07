@@ -54,7 +54,7 @@ def forward_feed(model, data, device, step_size=1, start_seq=0, block_update=30,
         datat = get_data(data, t)
         events, depth , mask = datat[:3]
         events, mask, depth = events.to(device), mask.to(device), depth.to(device)
-        
+
         labels = None
 
         if len(datat) == 4:
@@ -86,9 +86,9 @@ def forward_feed(model, data, device, step_size=1, start_seq=0, block_update=30,
 
 def compute_LPIPS_loss(predictions, depths, criterion):
     loss = 0
-    predictions.unsqueeze_(2)
+    predictions = predictions.unsqueeze(2)
     predictions = predictions.repeat(1, 1, 3, 1, 1)
-    depths.unsqueeze_(2)
+    depths = depths.unsqueeze(2)
     depths = depths.repeat(1, 1, 3, 1, 1)
     for t in range(predictions.shape[1]):
         pred = predictions[:,t]
@@ -96,11 +96,12 @@ def compute_LPIPS_loss(predictions, depths, criterion):
         loss += criterion(pred, enc).mean()
         
         if t > 0:
-            loss_est = torch.exp(-50 * torch.nn.MSELoss()(depths[:,t], depths[:,t-1]))
+            mse = torch.nn.MSELoss()(depths[:,t], depths[:,t-1])
+            loss_est = torch.exp(torch.clamp(-50 * mse, min=-10, max=10))
             loss_t = F.l1_loss(predictions[:,t], predictions[:,t-1])
             TC_loss = loss_t * loss_est
             
-            loss += 50 * TC_loss
+            loss += 10 * TC_loss
     return loss / predictions.shape[1]
 
 
@@ -111,7 +112,9 @@ def update(model, optimizer, scaler):
     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
     scaler.step(optimizer)
     scaler.update()
-    
+    # for name, param in model.named_parameters():
+    #     if param.grad is not None:
+    #         print(f"{name}: {param.grad.mean().item()} {param.grad.max().item()} {param.grad.min().item()}")
 
 
 def sequence_for_LSTM(data, model, criterion, optimizer, device,
@@ -166,6 +169,7 @@ def sequence_for_LSTM(data, model, criterion, optimizer, device,
         loss = compute_LPIPS_loss(predictions, depths, criterion)
         # if not train:
         if train:
+            
             scaler.scale(loss).backward()
         model.detach_states()
         loss_avg.append(loss.item())

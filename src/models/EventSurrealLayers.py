@@ -122,13 +122,13 @@ class Decoder(nn.Module):
     def forward(self, x, feats):
 
         # Apply the bottleneck layer
-        
+
         for i, layer in reversed(list(enumerate(self.decoder_layers))):
             x = layer(x)
             if i != 0:
                 x = F.interpolate(x, size=feats[i-1].shape[-2:], mode='bilinear', align_corners=False)
                 if self.method == "concatenate":
-                    x = torch.cat([x, feats[i-1]], dim=1)
+                    x = torch.cat([x, feats[i]], dim=1)
                 else:
                     x = x + feats[i-1]
         

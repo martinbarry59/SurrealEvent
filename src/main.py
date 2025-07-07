@@ -37,8 +37,8 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
             if save_path and not os.path.exists(writer_path):
                 os.makedirs(os.path.dirname(writer_path), exist_ok=True)
             video_writer = cv2.VideoWriter(writer_path, fourcc, 30, (3*346,260)) if (not train or batch_step % 10==0 and save_path) else None
-            with torch.amp.autocast(device_type=device.type):
-                loss_avg, loss_MSE, loss_SSIM = sequence_for_LSTM(data, model, criterion, optimizer, device, train, scaler,video_writer = video_writer)
+            # with torch.amp.autocast(device_type=device.type):
+            loss_avg, loss_MSE, loss_SSIM = sequence_for_LSTM(data, model, criterion, optimizer, device, train, scaler,video_writer = video_writer)
         
             batch_loss = sum(loss_avg)/len(loss_avg)
             epoch_loss.append(batch_loss)
@@ -62,8 +62,8 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
     return sum(epoch_loss)/len(epoch_loss)
 
 def main():
-    batch_train = 18
-    batch_test = 150
+    batch_train = 15
+    batch_test = 100
     network = "CONVLSTM" # LSTM, Transformer, BOBWFF, BOBWLSTM
     
 
@@ -74,8 +74,9 @@ def main():
     test_loader = torch.utils.data.DataLoader(test_dataset, batch_size= batch_test, shuffle=False, collate_fn=loading_method)
     epoch_checkpoint = 0
     save_path = f"{results_path}/{network}"
+    checkpoint_file = None
     if checkpoint_path:
-        checkpoint_files = glob.glob(f'{checkpoint_path}/model_epoch_*_{network}_small.pth')
+        checkpoint_files = glob.glob(f'{checkpoint_path}/model_epoch_*_{network}.pth')
         print(checkpoint_files)
     if checkpoint_files:
         # Extract epoch numbers and find the file with the highest epoch

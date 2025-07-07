@@ -84,13 +84,13 @@ class EventDepthDataset(Dataset):
 def sampling_events(t_old, t_new, events, old_events):
     max_events = 5000
     ## add white noised events
-    # N_white = torch.randint(0, 10, (1,)).item()
-    # white_events = torch.zeros((N_white, 4))
-    # white_events[:, 0] = t_old + torch.rand(N_white) * (t_new - t_old)
-    # white_events[:, 1] = torch.rand(N_white) * 0.99  # x
-    # white_events[:, 2] = torch.rand(N_white)* 0.99  # y
-    # white_events[:, 3] = torch.randint(0, 2, (N_white,)) * 2 - 1  # polaritys
-    # events = torch.cat([events, white_events], dim=0)
+    N_white = torch.randint(0, 100, (1,)).item()
+    white_events = torch.zeros((N_white, 4))
+    white_events[:, 0] = t_old + torch.rand(N_white) * (t_new - t_old)
+    white_events[:, 1] = torch.rand(N_white) * 0.99  # x
+    white_events[:, 2] = torch.rand(N_white)* 0.99  # y
+    white_events[:, 3] = torch.randint(0, 2, (N_white,)) * 2 - 1  # polaritys
+    events = torch.cat([events, white_events], dim=0)
     sample =  events[(events[:, 0] >= t_old )* (events[:, 0] < t_new)]
     # for t in sample[:,0]:
     #     print("{:.30f}".format(t.item()))  # 20 decimal places
