@@ -66,7 +66,9 @@ def main():
     batch_test = 100
     network = "CONVLSTM" # LSTM, Transformer, BOBWFF, BOBWLSTM
     
-
+    ## set seed for reproducibility
+    torch.manual_seed(42)
+    torch.cuda.manual_seed(42)
     loading_method = Transformer_collate
     train_dataset = EventDepthDataset(data_path+"/train/", tsne=True)
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_train, shuffle=True, collate_fn=loading_method)
@@ -112,7 +114,8 @@ def main():
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
 
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10, eta_min=1e-6)  # 10 = total number of epochs
-    test_only = False
+    test_only = True
+    save_path = save_path+ f"/{checkpoint_file.split('/')[-1].split('.')[0]}" if test_only else save_path
     min_loss = float('inf')
     for epoch in range(100):
         if epoch >= epoch_checkpoint:
