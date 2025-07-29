@@ -127,9 +127,9 @@ class BestOfBothWorld(nn.Module):
         lstm_inputs = []
         timed_features = []
         for events, mask in zip(event_sequence, mask_sequence):
-            # transformer_encoder = self.transformer_forward(events, mask)
+            transformer_encoder = self.transformer_forward(events, mask)
             # print("transformer_encoder shape:", transformer_encoder.shape)
-            transformer_encoder = torch.zeros((events.shape[0], self.channels, self.mheight, self.mwidth), device=events.device)
+            # transformer_encoder = torch.zeros((events.shape[0], self.channels, self.mheight, self.mwidth), device=events.device)
             
             hist_events = eventstohistogram(events, self.height, self.width)
             CNN_encoder, feats = self.encoder(hist_events)

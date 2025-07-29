@@ -121,7 +121,62 @@ def final_inference(model, loader, criterion, save_path=None):
                 loss_avg.append(instant_loss.item())
                 loss_MSE.append(MSE_loss.item())
                 loss_SSIM.append(state.metrics['ssim'])                    
+              
+
+    
+def final_inference(model, loader, criterion, save_path=None):
+    model.eval()
+    def eval_step(engine, batch):
+        return batch
+
+    default_evaluator = Engine(eval_step)
+    SSIM_metric = SSIM(data_range=1.0)
+    SSIM_metric.attach(default_evaluator, 'ssim')
+    with torch.no_grad():
+        tqdm_str = "inference"
+        batch_tqdm = tqdm.tqdm(total=len(loader), desc=f"Batch {tqdm_str}" , position=0, leave=True)
+        error_file = f'{save_path}/{tqdm_str}_error.txt' if save_path else None
+        inference_loss = []
+        inference_loss_MSE = []
+        inference_loss_SSIM = []
+        
+        for batch_step, data in enumerate(loader):
+            len_videos = 1188
+            writer_path = f'{save_path}/{tqdm_str}_video_{batch_step}.mp4' if save_path else None
+            loss_avg = []
+            loss_MSE = []
+            loss_SSIM = []
+           
+            
+            for t in range(1, len_videos):
+                events, depth, mask = get_data(data, t)
+                outputs, _ = model(events, mask)
+
+                    ## repeat ouputs for 3 channels
+                instant_loss = criterion(outputs.repeat(1, 3, 1, 1), depth.unsqueeze(1).repeat(1, 3, 1, 1)).mean()
+
+                ## also compute MSE loss
+                MSE_loss = F.mse_loss(outputs, depth.unsqueeze(1))
+                ## compute SSIM loss
+                state = default_evaluator.run([[outputs, depth.unsqueeze(1)]])
+                loss_avg.append(instant_loss.item())
+                loss_MSE.append(MSE_loss.item())
+                loss_SSIM.append(state.metrics['ssim'])                    
                 # if video_writer:
+                #     images_to_write = [events, depth[0], outputs[0,0].squeeze(0)]
+                #     add_frame_to_video(video_writer, images_to_write)
+            losses = f"Batch Losses, Loss: {sum(loss_avg)/len(loss_avg)}, MSE: {sum(loss_MSE)/len(loss_MSE)}, SSIM: {sum(loss_SSIM)/len(loss_SSIM)}"
+            batch_tqdm.update(1)
+            batch_tqdm.set_postfix({"loss": instant_loss})
+            inference_loss.append(sum(loss_avg)/len(loss_avg))
+            inference_loss_MSE.append(sum(loss_MSE)/len(loss_MSE))
+            inference_loss_SSIM.append(sum(loss_SSIM)/len(loss_SSIM))
+            with open(error_file, "a") as f:
+                f.write(f"{losses}\n")
+            model.reset_states()
+        final_losses = f"Final Losses, Loss: {sum(inference_loss)/len(inference_loss)}, MSE: {sum(inference_loss_MSE)/len(inference_loss_MSE)}, SSIM: {sum(inference_loss_SSIM)/len(inference_loss_SSIM)}"
+        with open(error_file, "a") as f:
+            f.write(f"{final_losses}\n")  # if video_writer:
                 #     images_to_write = [events, depth[0], outputs[0,0].squeeze(0)]
                 #     add_frame_to_video(video_writer, images_to_write)
             losses = f"Batch Losses, Loss: {sum(loss_avg)/len(loss_avg)}, MSE: {sum(loss_MSE)/len(loss_MSE)}, SSIM: {sum(loss_SSIM)/len(loss_SSIM)}"
