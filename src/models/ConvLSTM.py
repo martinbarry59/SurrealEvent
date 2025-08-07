@@ -94,14 +94,18 @@ class EConvlstm(nn.Module):
         for events in event_sequence:
             # normalise t per batch
             with torch.no_grad():
-                min_t = torch.min(events[:, :, 0], dim=1, keepdim=True)[0]
-                max_t = torch.max(events[:, :, 0], dim=1, keepdim=True)[0]
-                denom = (max_t - min_t)
-                # Avoid division by zero, but only where denom is zero
-                denom[denom < 1e-8] = 1.0  # If all times are the same, set denom to 1 to avoid NaN
-                events[:, :, 0] = (events[:, :, 0] - min_t) / denom
+                if events.shape[-1] == 4:
+                    
+                    min_t = torch.min(events[:, :, 0], dim=1, keepdim=True)[0]
+                    max_t = torch.max(events[:, :, 0], dim=1, keepdim=True)[0]
+                    denom = (max_t - min_t)
+                    # Avoid division by zero, but only where denom is zero
+                    denom[denom < 1e-8] = 1.0  # If all times are the same, set denom to 1 to avoid NaN
+                    events[:, :, 0] = (events[:, :, 0] - min_t) / denom
             
-                hist_events = eventstovoxel(events, self.height, self.width)
+                    hist_events = eventstovoxel(events, self.height, self.width)
+                else:
+                    hist_events = events
             CNN_encoder, feats = self.encoder(hist_events)
 
             for i, f in enumerate(feats):

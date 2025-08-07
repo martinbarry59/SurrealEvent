@@ -8,6 +8,7 @@ import tqdm
 from torchvision.transforms import v2 
 import shutil
 import random
+from utils.functions import  eventstovoxel
 class RandomChoice(torch.nn.Module):
     def __init__(self, transforms):
        super().__init__()
@@ -71,16 +72,38 @@ class EventDepthDataset(Dataset):
             events = torch.Tensor(f['vids'][:])  # shape [N_events, 4]
         with h5py.File(self.depth_files[idx], 'r') as f:
             depth = torch.Tensor(f['vids'][:])  # shape [T, H, W]
-
+        depth = remove_border(depth) 
+        ## convert uint8
+        depth = depth.to(torch.uint8)
         events = events[:, :4]
         events[:, 1] = events[:, 1] / 346
         events[:, 2] = events[:, 2] / 260
-        
+        voxels = torch.zeros((depth.shape[0], 5, 260, 346)).to(torch.uint8)
+        step = 1/(30*12)
+
+        for t in range(depth.shape[0]):
+            t_start = max((t - 4) * step, 0)
+            t_events = events[ (t * t_start <= events[:, 0]) * (events[:, 0] < (t + 1) * step)].unsqueeze(0)
+            voxels[t] = eventstovoxel(t_events, height=260, width=346)
+        return voxels, depth
+
         if self.tsne:
             return events, depth, self.events_files[idx].split("/")[-2]  # return the folder name as label
         else:
-            return events, depth
+            return voxels, depth
+    # def items_to_cache(self):
+    #     for idx in tqdm.tqdm(range(len(self.events_files))):
+    #         voxels, depth = self.__getitem__(idx)
+    #         ## print types of voxels and depth
+    #         print(f"Voxels type: {voxels.dtype}, Depth type: {depth.dtype}")
+    #         ## save it in efficient format for later use
 
+    #         cache_dir = self.events_files[idx].replace("dataset", "datasetpt")
+    #         if not os.path.exists(cache_dir):
+    #             os.makedirs(cache_dir)
+    #         cache_file = os.path.join(cache_dir, f"item_{idx}.pt")
+    #         torch.save((voxels, depth), cache_file)
+    #         return cache_file
 def sampling_events(t_old, t_new, events, old_events):
     max_events = 5000
     ## add white noised events
@@ -102,16 +125,20 @@ def sampling_events(t_old, t_new, events, old_events):
     return old_events
 
 def Transformer_collate(batch):
+    print(batch)
     # batch = list of (event_chunks, depth) tuples
-    
+    import time 
+    start = time.time()
     batched_event_chunks = []
     batched_masks = []
     depths = []
     
     for sample in batch:
         depths.append(remove_border(sample[1]) / 255 )  # [T, H, W]
-
+    depth_time = time.time()
+    
     depths = torch.stack(depths).permute((1,0,2,3))  # [B, T, H, W]
+    print(f"Depth processing time: {depth_time - start:.3f}s")
     t_new = 0
     event_histories = [torch.zeros(1,4) for _ in range(depths.shape[0])]
     step = 1/(30*12)
@@ -133,6 +160,9 @@ def Transformer_collate(batch):
             mask[i, :ev.size(0)] = 1
         batched_event_chunks.append(padded)
         batched_masks.append(mask)
+    event_time = time.time()
+    print(f"Event processing time: {event_time - depth_time:.3f}s")
+    exit()
     if len(batch[0]) == 2:
         return [batched_event_chunks, depths, batched_masks]
     elif len(batch[0]) == 3:
@@ -158,27 +188,12 @@ def CNN_collate(batch):
     event_frames = event_frames.permute(1, 0, 2, 3, 4)
     event_frames, depths = apply_augmentations(event_frames, depths)
     return [event_frames, depths]
-if __name__ == "__main__":
-    data_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../dataset/")
-    train_dataset = EventDepthDataset(data_path)
-    train_dataset.test_corruption()
-
 def get_data(data, t):
     if len(data) == 2:
         events_videos, depths = data
-        return events_videos[t], depths[t], None
-    elif len(data) == 3:
-        events_videos, depths, masks = data
-        events = events_videos[t]
-        depth = depths[t]
-        mask = masks[t]
-        return events, depth, mask
-    elif len(data) == 4:
-        events_videos, depths, masks, labels = data
-        events = events_videos[t]
-        depth = depths[t]
-        mask = masks[t]
-        label = [str_label+"_t_"+ str(t) for str_label in labels]
-        return events, depth, mask, label
-    else:
-        raise ValueError("Data must be a tuple of length 2, 3, or 4.")
+        return events_videos[:,t], depths[:, t]
+if __name__ == "__main__":
+    data_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../dataset/")
+    train_dataset = EventDepthDataset(data_path)
+    train_dataset.items_to_cache()
+

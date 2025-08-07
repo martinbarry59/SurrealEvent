@@ -71,32 +71,25 @@ def forward_feed(model, data, device, step_size=1, start_seq=0, block_update=30,
     max_t = start_seq + block_update * step_size if block_update > 0 else len(data[0]) - 1
     for t in range(start_seq, max_t, step_size):  
         datat = get_data(data, t) if not zeroing else get_data(data, start_seq)
-        events, depth , mask = datat[:3]
-        events, mask, depth = events.to(device), mask.to(device), depth.to(device)
-        if zeroing:
-            N_white = torch.randint(10, 500, (1,)).item()
-            white_events = torch.zeros((depth.shape[0], N_white, 4), device=device)
-            white_events[:,:, 0] = t + torch.rand((depth.shape[0], N_white)) * (t - max_t)
-            white_events[:,:, 1] = torch.rand((depth.shape[0], N_white)) * 0.99  # x
-            white_events[:,:, 2] = torch.rand((depth.shape[0], N_white)) * 0.99  # y
-            white_events[:,:, 3] = torch.randint(0, 2, (depth.shape[0], N_white)) * 2 - 1  # polarity
-            extra_events = white_events
-            events = extra_events
+        events, depth = datat[:2]
+        ## add white noise (-1 or 1 ) with 10% probability
+        events, depth = events.to(device), depth.to(device)
+        events = events + (torch.randint(0, 2, events.shape, device=device) * 2 - 1) * (torch.rand(events.shape, device=device) < 0.1)
+        
+
         labels = None
 
         if len(datat) == 4:
             labels = datat[3]
-            
-       
-        seq_events.append(events)
-        seq_masks.append(mask)
-        seq_depths.append(depth)
+        seq_events.append(events.to(torch.float32))
+        seq_depths.append(depth / 255)
         if labels is not None:
             seq_labels.append(labels)
     ## convert the seq_labels to numpy array
     seq_depths = torch.stack(seq_depths, dim=1)
     if len(seq_labels) > 0:
         seq_labels = np.array(seq_labels)
+    
     predictions, encodings = model(seq_events, seq_masks)
     with torch.no_grad():
         if video_writer:
