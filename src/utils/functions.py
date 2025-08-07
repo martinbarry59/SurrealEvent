@@ -29,7 +29,7 @@ def eventstovoxel(events, height=260, width=346, bins=5):
     voxel = torch.zeros(B, bins, height, width, device=device)
     batch_idx = torch.arange(B, device=device).unsqueeze(1).expand(-1, N)
 
-    voxel.index_put_((batch_idx, c, y, x), (2* p -1) * torch.ones_like(t, dtype=torch.float), accumulate=True)
+    voxel.index_put_((batch_idx, c, y, x), p * torch.ones_like(t, dtype=torch.float), accumulate=True)
 
     return voxel
 def eventstohistogram(events, height=260, width=346):

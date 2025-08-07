@@ -32,7 +32,25 @@ SSIM_metric.attach(default_evaluator, 'ssim')
 #     plt.show()
 
 
-
+def compute_edge_loss(pred, target):
+    """Compute edge-preserving loss using Sobel filters"""
+    # Sobel filters for edge detection
+    sobel_x = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=torch.float32, device=pred.device).view(1, 1, 3, 3)
+    sobel_y = torch.tensor([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], dtype=torch.float32, device=pred.device).view(1, 1, 3, 3)
+    
+    # Compute edges
+    pred_edge_x = F.conv2d(pred, sobel_x, padding=1)
+    pred_edge_y = F.conv2d(pred, sobel_y, padding=1)
+    target_edge_x = F.conv2d(target, sobel_x, padding=1)
+    target_edge_y = F.conv2d(target, sobel_y, padding=1)
+    
+    # Edge magnitude
+    eps = 1e-8
+    pred_edges = torch.sqrt(pred_edge_x**2 + pred_edge_y**2 + eps)
+    target_edges = torch.sqrt(target_edge_x**2 + target_edge_y**2 + eps)
+    
+    return F.l1_loss(pred_edges, target_edges)
+    
 def process_output(mask):
     """task mask as input, compute the target for contrastive loss"""
     (T1, B1, T2, B2) = mask.size()  # [B, P, SQ, B, N, SQ]
@@ -44,17 +62,26 @@ def process_output(mask):
 
 
 
-def forward_feed(model, data, device, step_size=1, start_seq=0, block_update=30, video_writer=None):
+def forward_feed(model, data, device, step_size=1, start_seq=0, block_update=30, video_writer=None, zeroing=False):
+    
     seq_events = []
     seq_masks = []
     seq_depths = []
     seq_labels = []
     max_t = start_seq + block_update * step_size if block_update > 0 else len(data[0]) - 1
-    for t in range(start_seq, max_t, step_size):   
-        datat = get_data(data, t)
+    for t in range(start_seq, max_t, step_size):  
+        datat = get_data(data, t) if not zeroing else get_data(data, start_seq)
         events, depth , mask = datat[:3]
         events, mask, depth = events.to(device), mask.to(device), depth.to(device)
-
+        if zeroing:
+            N_white = torch.randint(10, 500, (1,)).item()
+            white_events = torch.zeros((depth.shape[0], N_white, 4), device=device)
+            white_events[:,:, 0] = t + torch.rand((depth.shape[0], N_white)) * (t - max_t)
+            white_events[:,:, 1] = torch.rand((depth.shape[0], N_white)) * 0.99  # x
+            white_events[:,:, 2] = torch.rand((depth.shape[0], N_white)) * 0.99  # y
+            white_events[:,:, 3] = torch.randint(0, 2, (depth.shape[0], N_white)) * 2 - 1  # polarity
+            extra_events = white_events
+            events = extra_events
         labels = None
 
         if len(datat) == 4:
@@ -84,7 +111,7 @@ def forward_feed(model, data, device, step_size=1, start_seq=0, block_update=30,
 
 
 
-def compute_LPIPS_loss(predictions, depths, criterion):
+def compute_mixed_loss(predictions, depths, criterion, epoch):
     loss = 0
     predictions = predictions.unsqueeze(2)
     predictions = predictions.repeat(1, 1, 3, 1, 1)
@@ -94,14 +121,15 @@ def compute_LPIPS_loss(predictions, depths, criterion):
         pred = predictions[:,t]
         enc = depths[:,t]
         loss += criterion(pred, enc).mean()
-        
+        # if epoch > 0:
+        loss += min(1, epoch) * compute_edge_loss(pred[:,0:1], enc[:,0:1])
         if t > 0:
             mse = torch.nn.MSELoss()(depths[:,t], depths[:,t-1])
             loss_est = torch.exp(torch.clamp(-50 * mse, min=-10, max=10))
             loss_t = F.l1_loss(predictions[:,t], predictions[:,t-1])
             TC_loss = loss_t * loss_est
             
-            loss += 10 * TC_loss
+            loss += 10 * min(1, max(0, (epoch-5)/3) * TC_loss)
     return loss / predictions.shape[1]
 
 
@@ -118,17 +146,14 @@ def update(model, optimizer, scaler):
 
 
 def sequence_for_LSTM(data, model, criterion, optimizer, device,
-                    train = True, scaler = None,
+                    train = True,  epoch = 0, scaler = None,
                     len_videos=1188, training_steps=300, block_update=25, rand_step=True,
                     video_writer=None):
-    if rand_step:
-        step_size =  torch.randint(1, 10, (1,)).item()
-    else:
-        ## fixed step size
-        step_size = 1
+    step_size =  torch.randint(1, 40, (1,)).item() if train else 1
+
     if train:
-        N_update = int(training_steps / block_update)
-        t_start = random.randint(10, len_videos - N_update * block_update)
+        N_update = int(len_videos / (block_update* step_size))
+        t_start = random.randint(10, len_videos - N_update * block_update * step_size - 1)
     else:
         training_steps = len_videos- 10
         N_update = int(training_steps / block_update)
@@ -138,15 +163,21 @@ def sequence_for_LSTM(data, model, criterion, optimizer, device,
     loss_SSIM = []
     # print(f"Starting training from {t_start} for {N_update} updates with block size {block_update} and step size {step_size}")
     optimizer.zero_grad()
+    zero_run = True if 0.1 > random.random() else False
     for n in range(N_update):
         
         start_seq = t_start + n * block_update * step_size
         if (start_seq + block_update * step_size) > len_videos - 1:
             break
+        if n>2 and zero_run:
+            zeroing = True
+            start_seq = t_start + 3 * block_update * step_size
+        else:
+            zeroing = False
         predictions, encodings, labels, depths = forward_feed(model, data, device, step_size=step_size, 
                                                               start_seq=start_seq, block_update=block_update, 
-                                                              video_writer=video_writer)
-        
+                                                              video_writer=video_writer, zeroing=zeroing)
+
         # if n == 0 and len(labels) > 0:
         #     with torch.no_grad():
         #         labels = np.permute_dims(labels, (1, 0))
@@ -165,12 +196,16 @@ def sequence_for_LSTM(data, model, criterion, optimizer, device,
         
         
         ## compute SSIM loss
-        # SSIM_loss = torch.torchev
-        loss = compute_LPIPS_loss(predictions, depths, criterion)
+        loss = compute_mixed_loss(predictions, depths, criterion, epoch)
         # if not train:
         if train:
-            
             scaler.scale(loss).backward()
+            # total_norm = 0
+            # for p in model.parameters():
+            #     if p.grad is not None:
+            #         param_norm = p.grad.data.norm(2)
+            #         print(f"{p.shape} grad norm: {param_norm:.6f}")
+            # exit()
         model.detach_states()
         loss_avg.append(loss.item())
         del loss, encodings
@@ -191,7 +226,7 @@ def sequence_for_LSTM(data, model, criterion, optimizer, device,
         # if n == 0:
         #     check_CPC_representation_collapse(predictions, encodings)
     model.reset_states()
-    return loss_avg, loss_MSE, loss_SSIM
+    return loss_avg, loss_MSE, loss_SSIM, step_size, zero_run
 
 def init_simulation(device, batch_size=10, network="Transformer", checkpoint_file = None):
     

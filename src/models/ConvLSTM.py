@@ -49,7 +49,24 @@ class EConvlstm(nn.Module):
             nn.Sigmoid()
         ) 
 
-        
+        # self._initialize_weights()
+    
+    def _initialize_weights(self):
+        """Initialize weights to avoid sigmoid saturation"""
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                # Xavier initialization for better gradient flow
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)  
+        final_conv = self.final_conv[-2]  # The last Conv2d before Sigmoid
+        nn.init.normal_(final_conv.weight, mean=0.0, std=0.01)  # Small weights
+        if final_conv.bias is not None:
+            nn.init.constant_(final_conv.bias, -2.0)  # Negative bias pushes sigmoid away from 0.5      
     def reset_states(self):
         if "LSTM" in self.model_type:
             self.convlstm.reset_hidden()
