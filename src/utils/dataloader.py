@@ -69,21 +69,20 @@ class EventDepthDataset(Dataset):
 
     def __getitem__(self, idx):
         with h5py.File(self.events_files[idx], 'r') as f:
-            events = torch.Tensor(f['vids'][:])  # shape [N_events, 4]
+            events = torch.Tensor(f['vids'][:], )  # shape [N_events, 4]
         with h5py.File(self.depth_files[idx], 'r') as f:
             depth = torch.Tensor(f['vids'][:])  # shape [T, H, W]
         depth = remove_border(depth) 
         ## convert uint8
         depth = depth.to(torch.uint8)
         events = events[:, :4]
-        events[:, 1] = events[:, 1] / 346
-        events[:, 2] = events[:, 2] / 260
+        
         voxels = torch.zeros((depth.shape[0], 5, 260, 346)).to(torch.uint8)
         step = 1/(30*12)
 
         for t in range(depth.shape[0]):
             t_start = max((t - 4) * step, 0)
-            t_events = events[ (t * t_start <= events[:, 0]) * (events[:, 0] < (t + 1) * step)].unsqueeze(0)
+            t_events = events[ ( t_start <= events[:, 0]) * (events[:, 0] < (t + 1) * step)].unsqueeze(0)
             voxels[t] = eventstovoxel(t_events, height=260, width=346)
         return voxels, depth
 

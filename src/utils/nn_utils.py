@@ -74,7 +74,7 @@ def forward_feed(model, data, device, step_size=1, start_seq=0, block_update=30,
         events, depth = datat[:2]
         ## add white noise (-1 or 1 ) with 10% probability
         events, depth = events.to(device), depth.to(device)
-        events = events + (torch.randint(0, 2, events.shape, device=device) * 2 - 1) * (torch.rand(events.shape, device=device) < 0.1)
+        # events = events + (torch.randint(0, 2, events.shape, device=device) * 2 - 1) * (torch.rand(events.shape, device=device) < 0.01)
         
 
         labels = None

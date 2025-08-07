@@ -1,7 +1,7 @@
 
 from models.BOBW import BestOfBothWorld
 from models.ConvLSTM import EConvlstm
-from utils.dataloader import EventDepthDataset, CNN_collate, Transformer_collate
+from utils.dataloader import EventDepthDataset
 
 import torch
 from config import data_path, checkpoint_path, results_path
@@ -38,8 +38,8 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
                 os.makedirs(os.path.dirname(writer_path), exist_ok=True)
             video_writer = cv2.VideoWriter(writer_path, fourcc, 30, (3*346,260)) if (not train or batch_step % 10==0 and save_path) else None
             # with torch.amp.autocast(device_type=device.type):
-            loss_avg, loss_MSE, loss_SSIM = sequence_for_LSTM(data, model, criterion, optimizer, device, train, scaler,video_writer = video_writer)
-        
+            loss_avg, loss_MSE, loss_SSIM, step_size, zero_run = sequence_for_LSTM(data, model, criterion, optimizer, device, train, epoch, scaler, video_writer=video_writer)
+
             batch_loss = sum(loss_avg)/len(loss_avg)
             epoch_loss.append(batch_loss)
             if len(loss_MSE) > 0:
@@ -49,12 +49,12 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
                 loss_SSIM.append(batch_loss_SSIM)
 
             with open(error_file, "a") as f:
-                f.write(f"Epoch {epoch}, Batch {batch_step} / {len(loader)}, Loss: {batch_loss}, LR: {optimizer.param_groups[0]['lr']}\n")
-            video_writer.release() if video_writer else None   
+                f.write(f"Epoch {epoch}, Batch {batch_step} / {len(loader)}, Loss: {batch_loss}, LR: {optimizer.param_groups[0]['lr']}, Step Size: {step_size}\n")
+            video_writer.release() if video_writer else None
             if model.model_type != "Transformer":
                 model.reset_states()            
             batch_tqdm.update(1)
-            batch_tqdm.set_postfix({"loss": batch_loss})
+            batch_tqdm.set_postfix({"loss": batch_loss, "step_size": step_size, "zero_run": zero_run})
            
         batch_tqdm.close()
     if len(loss_MSE) > 0:
@@ -64,13 +64,12 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
 def main():
 
     batch_train = 15
-    batch_test = 15
+    batch_test = 100
     network = "CONVLSTM" # LSTM, Transformer, BOBWFF, BOBWLSTM
     
     ## set seed for reproducibility
     torch.manual_seed(42)
     torch.cuda.manual_seed(42)
-    loading_method = Transformer_collate
     train_dataset = EventDepthDataset(data_path+"/train/", tsne=True)
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_train, shuffle=True)
     test_dataset = EventDepthDataset(data_path+"/test/", tsne=True)
@@ -115,7 +114,7 @@ def main():
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
 
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10, eta_min=1e-6)  # 10 = total number of epochs
-    test_only = True
+    test_only = False
     save_path = save_path+ f"/{checkpoint_file.split('/')[-1].split('.')[0]}" if test_only else save_path
     min_loss = float('inf')
     for epoch in range(100):

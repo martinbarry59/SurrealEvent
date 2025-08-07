@@ -18,10 +18,10 @@ def eventstovoxel(events, height=260, width=346, bins=5):
 
     # Normalize and quantize to voxel indices
     
-    x = (events[:, :, 1] * width).long().clamp(0, width - 1)
-    y = (events[:, :, 2] * height).long().clamp(0, height - 1)
+    x = events[:, :, 1].long()
+    y = events[:, :, 2].long()
     t = (events[:, :, 0] * bins).long().clamp(0, bins - 1)
-    
+
     p = events[:, :, 3].long()
     # Final channel index: [B, N]
     c = t
@@ -31,7 +31,7 @@ def eventstovoxel(events, height=260, width=346, bins=5):
 
     voxel.index_put_((batch_idx, c, y, x), p * torch.ones_like(t, dtype=torch.float), accumulate=True)
 
-    return voxel
+    return voxel.to(torch.int8)
 def eventstohistogram(events, height=260, width=346):
         B, N, _ = events.shape
         x = (events[:, :, 1] * width).long().clamp(0, width - 1)
