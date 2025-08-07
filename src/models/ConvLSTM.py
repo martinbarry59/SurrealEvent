@@ -102,10 +102,12 @@ class EConvlstm(nn.Module):
                     # Avoid division by zero, but only where denom is zero
                     denom[denom < 1e-8] = 1.0  # If all times are the same, set denom to 1 to avoid NaN
                     events[:, :, 0] = (events[:, :, 0] - min_t) / denom
-                    
+                    events[:,:, 1] = events[:, :, 1].clamp(0, self.width)
+                    events[:,:, 2] = events[:, :, 2].clamp(0, self.height)
                     hist_events = eventstovoxel(events, self.height, self.width).float()
                 else:
                     hist_events = events
+            print(torch.min(hist_events), torch.max(hist_events), torch.mean(hist_events), torch.std(hist_events))
             CNN_encoder, feats = self.encoder(hist_events)
 
             for i, f in enumerate(feats):
