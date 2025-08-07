@@ -17,11 +17,10 @@ def eventstovoxel(events, height=260, width=346, bins=5):
     device = events.device
 
     # Normalize and quantize to voxel indices
-    
-    x = events[:, :, 1].long()
-    y = events[:, :, 2].long()
-    t = (events[:, :, 0] * bins).long().clamp(0, bins - 1)
 
+    x = (events[:, :, 1]).long()
+    y = (events[:, :, 2]).long()
+    t = (events[:, :, 0] * bins).long().clamp(0, bins - 1)
     p = events[:, :, 3].long()
     # Final channel index: [B, N]
     c = t
@@ -46,8 +45,8 @@ def eventstohistogram(events, height=260, width=346):
 
 def add_frame_to_video(video_writer, images):
     if images[0].shape[-1] == 4:
-        y = torch.round(images[0][0,:,1] * 346)
-        x = torch.round(images[0][0,:,2] * 260)
+        y = torch.round(images[0][0,:,1])
+        x = torch.round(images[0][0,:,2])
         img = torch.zeros(260, 346).to(images[0].device)
         img[x.long(), y.long()] = 1
     else:

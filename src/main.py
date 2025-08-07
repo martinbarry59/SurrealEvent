@@ -1,7 +1,7 @@
 
 from models.BOBW import BestOfBothWorld
 from models.ConvLSTM import EConvlstm
-from utils.dataloader import EventDepthDataset
+from utils.dataloader import EventDepthDataset, Transformer_collate
 
 import torch
 from config import data_path, checkpoint_path, results_path
@@ -63,7 +63,7 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
 
 def main():
 
-    batch_train = 15
+    batch_train = 1
     batch_test = 100
     network = "CONVLSTM" # LSTM, Transformer, BOBWFF, BOBWLSTM
     
@@ -71,7 +71,7 @@ def main():
     torch.manual_seed(42)
     torch.cuda.manual_seed(42)
     train_dataset = EventDepthDataset(data_path+"/train/", tsne=True)
-    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_train, shuffle=True)
+    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_train, shuffle=True, collate_fn=Transformer_collate)
     test_dataset = EventDepthDataset(data_path+"/test/", tsne=True)
     test_loader = torch.utils.data.DataLoader(test_dataset, batch_size= batch_test, shuffle=False)
     epoch_checkpoint = 0

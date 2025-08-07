@@ -72,19 +72,22 @@ class EventDepthDataset(Dataset):
             events = torch.Tensor(f['vids'][:], )  # shape [N_events, 4]
         with h5py.File(self.depth_files[idx], 'r') as f:
             depth = torch.Tensor(f['vids'][:])  # shape [T, H, W]
-        depth = remove_border(depth) 
+        
         ## convert uint8
+        depth = remove_border(depth)
         depth = depth.to(torch.uint8)
+
         events = events[:, :4]
         
-        voxels = torch.zeros((depth.shape[0], 5, 260, 346)).to(torch.uint8)
+        # voxels = torch.zeros((depth.shape[0], 5, 260, 346)).to(torch.uint8)
         step = 1/(30*12)
-
+        t_events = torch.zeros((depth.shape[0], 10000, 4))
         for t in range(depth.shape[0]):
+              # [1, 4]
             t_start = max((t - 4) * step, 0)
-            t_events = events[ ( t_start <= events[:, 0]) * (events[:, 0] < (t + 1) * step)].unsqueeze(0)
-            voxels[t] = eventstovoxel(t_events, height=260, width=346)
-        return voxels, depth
+            nevents = events[ ( t_start <= events[:, 0]) * (events[:, 0] < (t + 1) * step)].unsqueeze(0)
+            t_events[t, :nevents.shape[1]] = nevents
+        return t_events, depth
 
         if self.tsne:
             return events, depth, self.events_files[idx].split("/")[-2]  # return the folder name as label
@@ -104,69 +107,49 @@ class EventDepthDataset(Dataset):
     #         torch.save((voxels, depth), cache_file)
     #         return cache_file
 def sampling_events(t_old, t_new, events, old_events):
-    max_events = 5000
-    ## add white noised events
-    N_white = torch.randint(0, 100, (1,)).item()
-    white_events = torch.zeros((N_white, 4))
-    white_events[:, 0] = t_old + torch.rand(N_white) * (t_new - t_old)
-    white_events[:, 1] = torch.rand(N_white) * 0.99  # x
-    white_events[:, 2] = torch.rand(N_white)* 0.99  # y
-    white_events[:, 3] = torch.randint(0, 2, (N_white,)) * 2 - 1  # polaritys
-    events = torch.cat([events, white_events], dim=0)
-    sample =  events[(events[:, 0] >= t_old )* (events[:, 0] < t_new)]
+    
+    
     # for t in sample[:,0]:
     #     print("{:.30f}".format(t.item()))  # 20 decimal places
-    if sample.shape[0] != 0:
-        old_events = sample#torch.cat([old_events, sample], dim=0)
-        if len(old_events) > max_events:
-            old_events = old_events[-max_events:]
     
-    return old_events
+    
+    return events[(events[:, 0] >= t_old )* (events[:, 0] < t_new)]
 
 def Transformer_collate(batch):
-    print(batch)
     # batch = list of (event_chunks, depth) tuples
     import time 
     start = time.time()
     batched_event_chunks = []
-    batched_masks = []
+    events = []
     depths = []
-    
-    for sample in batch:
-        depths.append(remove_border(sample[1]) / 255 )  # [T, H, W]
     depth_time = time.time()
+    for sample in batch:
+        depths.append(sample[1])  # [T, H, W]
+        events.append(sample[0])  # [T, N_i, 4]
     
-    depths = torch.stack(depths).permute((1,0,2,3))  # [B, T, H, W]
-    print(f"Depth processing time: {depth_time - start:.3f}s")
-    t_new = 0
-    event_histories = [torch.zeros(1,4) for _ in range(depths.shape[0])]
-    step = 1/(30*12)
-    for _ in range(depths.shape[0]):
-        # continue
+    depths = torch.stack(depths).permute((1,0,2,3))  # [T, B, H, W]
+    events = torch.stack(events).permute((1, 0,2, 3))  # [T, B, N_i, 4]
+    # for _ in range(depths.shape[0]):
+    #     # continue
         
-        t_start = max(t_new - 4 * step, 0)
-        t_new = t_new + step
-        # list of [N_i, 4]
+    #     t_start = max(t_new - 4 * step, 0)
+    #     t_new = t_new + step
+    #     # list of [N_i, 4]
         
-        if len(batch[0]) == 2:
-            event_histories = [sampling_events(t_start, t_new, events, event_histories[n]) for n, (events, _) in enumerate(batch)]
-        elif len(batch[0]) == 3:
-            event_histories = [sampling_events(t_start, t_new, events, event_histories[n]) for n, (events, _, _) in enumerate(batch)]
+    #     if len(batch[0]) == 2:
+    #         event_histories = [sampling_events(t_start, t_new, events, event_histories[n]) for n, (events, _) in enumerate(batch)]
+    #     elif len(batch[0]) == 3:
+    #         event_histories = [sampling_events(t_start, t_new, events, event_histories[n]) for n, (events, _, _) in enumerate(batch)]
         
-        padded = pad_sequence(event_histories, batch_first=True)  # [B, N_max, 4]
-        mask = torch.zeros(padded.shape[:2], dtype=torch.bool)  # [B, N_max]
-        for i, ev in enumerate(event_histories):
-            mask[i, :ev.size(0)] = 1
-        batched_event_chunks.append(padded)
-        batched_masks.append(mask)
-    event_time = time.time()
-    print(f"Event processing time: {event_time - depth_time:.3f}s")
-    exit()
+    #     # padded = pad_sequence(event_histories, batch_first=True)  # [B, N_max, 4]
+       
+    #     # batched_event_chunks.append(padded)
+   
     if len(batch[0]) == 2:
-        return [batched_event_chunks, depths, batched_masks]
+        return [events, depths]
     elif len(batch[0]) == 3:
         labels = [sample[2] for sample in batch]
-        return [batched_event_chunks, depths, batched_masks, labels]
+        return [batched_event_chunks, depths, labels]
 
 def CNN_collate(batch):
     
@@ -190,7 +173,7 @@ def CNN_collate(batch):
 def get_data(data, t):
     if len(data) == 2:
         events_videos, depths = data
-        return events_videos[:,t], depths[:, t]
+        return events_videos[t], depths[t]
 if __name__ == "__main__":
     data_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../dataset/")
     train_dataset = EventDepthDataset(data_path)

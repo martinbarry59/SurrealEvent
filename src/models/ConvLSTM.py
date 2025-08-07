@@ -102,8 +102,8 @@ class EConvlstm(nn.Module):
                     # Avoid division by zero, but only where denom is zero
                     denom[denom < 1e-8] = 1.0  # If all times are the same, set denom to 1 to avoid NaN
                     events[:, :, 0] = (events[:, :, 0] - min_t) / denom
-            
-                    hist_events = eventstovoxel(events, self.height, self.width)
+                    
+                    hist_events = eventstovoxel(events, self.height, self.width).float()
                 else:
                     hist_events = events
             CNN_encoder, feats = self.encoder(hist_events)
