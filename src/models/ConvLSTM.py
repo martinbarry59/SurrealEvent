@@ -108,7 +108,6 @@ class EConvlstm(nn.Module):
                 timed_features[i].append(f)
         # Concatenate the outputs from the transformer and CNN
             interpolated = F.interpolate(CNN_encoder, size=(self.mheight, self.mwidth), mode='bilinear', align_corners=False)
-
             lstm_inputs.append(interpolated)
         
         lstm_inputs = torch.stack(lstm_inputs, dim=1)
@@ -132,5 +131,5 @@ class EConvlstm(nn.Module):
         
             outputs.append(self.final_conv(x))
         outputs = torch.cat(outputs, dim=1)
-        del lstm_inputs, skip_outputs
+
         return outputs, encodings.detach()

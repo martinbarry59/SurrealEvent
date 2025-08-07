@@ -140,9 +140,6 @@ def update(model, optimizer, scaler):
     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
     scaler.step(optimizer)
     scaler.update()
-    # for name, param in model.named_parameters():
-    #     if param.grad is not None:
-    #         print(f"{name}: {param.grad.mean().item()} {param.grad.max().item()} {param.grad.min().item()}")
 
 
 def sequence_for_LSTM(data, model, criterion, optimizer, device,
