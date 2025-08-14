@@ -74,8 +74,7 @@ def forward_feed(model, data, device, step_size=1, start_seq=0, block_update=30,
         events, depth = datat[:2]
         ## add white noise (-1 or 1 ) with 10% probability
         events, depth = events.to(device), depth.to(device)
-        white_noise = (torch.randint(0, 2, events.shape, device=device) * 2 - 1) * (torch.rand(events.shape, device=device) < 0.001)
-        events = events + white_noise if not zeroing else white_noise
+        events = events if not zeroing else events * 0
 
         labels = None
 
@@ -90,7 +89,7 @@ def forward_feed(model, data, device, step_size=1, start_seq=0, block_update=30,
     if len(seq_labels) > 0:
         seq_labels = np.array(seq_labels)
     
-    predictions, encodings = model(seq_events, seq_masks)
+    predictions, encodings, seq_events = model(seq_events, seq_masks)
     with torch.no_grad():
         if video_writer:
             # for t in range(predictions.shape[1]):
@@ -122,7 +121,7 @@ def compute_mixed_loss(predictions, depths, criterion, epoch):
             loss_t = F.l1_loss(predictions[:,t], predictions[:,t-1])
             TC_loss = loss_t * loss_est
             
-            loss += 10 * min(1, max(0, (epoch-5)/3) * TC_loss)
+            loss += 5 * min(1, max(0, (epoch-5)/3) * TC_loss)
     return loss / predictions.shape[1]
 
 

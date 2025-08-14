@@ -36,7 +36,7 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
             writer_path = f'{save_path}/{tqdm_str}_EPOCH_{epoch}_video_{batch_step}.mp4' if save_path else None
             if save_path and not os.path.exists(writer_path):
                 os.makedirs(os.path.dirname(writer_path), exist_ok=True)
-            video_writer = cv2.VideoWriter(writer_path, fourcc, 30, (3*346,260)) if (not train or batch_step % 10==0 and save_path) else None
+            video_writer = cv2.VideoWriter(writer_path, fourcc, 30, (3*346,260)) if (not train or batch_step % 100==0 and save_path) else None
             # with torch.amp.autocast(device_type=device.type):
             loss_avg, loss_MSE, loss_SSIM, step_size, zero_run = sequence_for_LSTM(data, model, criterion, optimizer, device, train, epoch, scaler, video_writer=video_writer)
 
@@ -73,7 +73,7 @@ def main():
     train_dataset = EventDepthDataset(data_path+"/train/", tsne=True)
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_train, shuffle=True, collate_fn=Transformer_collate)
     test_dataset = EventDepthDataset(data_path+"/test/", tsne=True)
-    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size= batch_test, shuffle=False)
+    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size= batch_test, shuffle=False, collate_fn=Transformer_collate)
     epoch_checkpoint = 0
     save_path = f"{results_path}/{network}"
     checkpoint_file = None

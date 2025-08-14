@@ -17,6 +17,15 @@ def eventstovoxel(events, height=260, width=346, bins=5):
     device = events.device
 
     # Normalize and quantize to voxel indices
+    N_fake_events = torch.randint(0, 1000 , size=(1,), device=device).item()
+
+    fake_events = torch.zeros(B, N_fake_events, 4, device=device)
+    fake_events[:, :, 0] = torch.rand(B, N_fake_events, device=device) # Random times
+    fake_events[:, :, 1] = torch.randint(0, width, (B, N_fake_events), device=device)  # Random x
+    fake_events[:, :, 2] = torch.randint(0, height, (B, N_fake_events), device=device)  # Random y
+    fake_events[:, :, 3] = torch.randint(0, 2, (B, N_fake_events), device=device) * 2 - 1  # Random polarities (-1 or 1)
+    events = torch.cat([events, fake_events], dim=1)  # Add fake events to the batch
+    B, N, _ = events.shape  # N_total = N + N_fake_events
 
     x = (events[:, :, 1]).long()
     y = (events[:, :, 2]).long()
@@ -30,6 +39,8 @@ def eventstovoxel(events, height=260, width=346, bins=5):
 
     voxel.index_put_((batch_idx, c, y, x), p * torch.ones_like(t, dtype=torch.float), accumulate=True)
 
+    ## add random events to all batche and channels
+    
     return voxel.to(torch.int8)
 def eventstohistogram(events, height=260, width=346):
         B, N, _ = events.shape

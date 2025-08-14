@@ -90,7 +90,7 @@ class EConvlstm(nn.Module):
         
         lstm_inputs = []
         timed_features = [[] for _ in range(len(self.encoder_channels))]  # For skip connections
-
+        seq_events = []
         for events in event_sequence:
             # normalise t per batch
             with torch.no_grad():
@@ -100,14 +100,19 @@ class EConvlstm(nn.Module):
                     max_t = torch.max(events[:, :, 0], dim=1, keepdim=True)[0]
                     denom = (max_t - min_t)
                     # Avoid division by zero, but only where denom is zero
+                    # print(f"Target time range: [{events[:, :, 0].min():.3f}, {events[:, :, 0].max():.3f}]")
+                    # print(f"Target x range: [{events[:, :, 1].min():.3f}, {events[:, :, 1].max():.3f}]")
+                    # print(f"Target y range: [{events[:, :, 2].min():.3f}, {events[:, :, 2].max():.3f}]")
+                    # print(f"Target polarity range: [{events[:, :, 3].min():.3f}, {events[:, :, 3].max():.3f}]")
                     denom[denom < 1e-8] = 1.0  # If all times are the same, set denom to 1 to avoid NaN
                     events[:, :, 0] = (events[:, :, 0] - min_t) / denom
-                    events[:,:, 1] = events[:, :, 1].clamp(0, self.width)
-                    events[:,:, 2] = events[:, :, 2].clamp(0, self.height)
+                    events[:,:, 1] = events[:, :, 1].clamp(0, self.width-1)
+                    events[:,:, 2] = events[:, :, 2].clamp(0, self.height-1)
+                    
                     hist_events = eventstovoxel(events, self.height, self.width).float()
+                    seq_events.append(hist_events)
                 else:
                     hist_events = events
-            print(torch.min(hist_events), torch.max(hist_events), torch.mean(hist_events), torch.std(hist_events))
             CNN_encoder, feats = self.encoder(hist_events)
 
             for i, f in enumerate(feats):
@@ -138,4 +143,4 @@ class EConvlstm(nn.Module):
             outputs.append(self.final_conv(x))
         outputs = torch.cat(outputs, dim=1)
 
-        return outputs, encodings.detach()
+        return outputs, encodings.detach(), seq_events
