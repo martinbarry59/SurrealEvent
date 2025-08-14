@@ -1,7 +1,7 @@
 
 import torch
 import cv2
-def eventstovoxel(events, height=260, width=346, bins=5):
+def eventstovoxel(events, height=260, width=346, bins=5, fake_events=False):
     """
     Converts a batch of events into a voxel grid.
     
@@ -17,11 +17,20 @@ def eventstovoxel(events, height=260, width=346, bins=5):
     device = events.device
 
     # Normalize and quantize to voxel indices
-    
-    x = (events[:, :, 1] * width).long().clamp(0, width - 1)
-    y = (events[:, :, 2] * height).long().clamp(0, height - 1)
+    if fake_events:
+        N_fake_events = torch.randint(0, 1000 , size=(1,), device=device).item()
+
+        fake_events = torch.zeros(B, N_fake_events, 4, device=device)
+        fake_events[:, :, 0] = torch.rand(B, N_fake_events, device=device) # Random times
+        fake_events[:, :, 1] = torch.randint(0, width, (B, N_fake_events), device=device)  # Random x
+        fake_events[:, :, 2] = torch.randint(0, height, (B, N_fake_events), device=device)  # Random y
+        fake_events[:, :, 3] = torch.randint(0, 2, (B, N_fake_events), device=device) * 2 - 1  # Random polarities (-1 or 1)
+        events = torch.cat([events, fake_events], dim=1)  # Add fake events to the batch
+    B, N, _ = events.shape  # N_total = N + N_fake_events
+
+    x = (events[:, :, 1]).long()
+    y = (events[:, :, 2]).long()
     t = (events[:, :, 0] * bins).long().clamp(0, bins - 1)
-    
     p = events[:, :, 3].long()
     # Final channel index: [B, N]
     c = t
@@ -29,10 +38,17 @@ def eventstovoxel(events, height=260, width=346, bins=5):
     voxel = torch.zeros(B, bins, height, width, device=device)
     batch_idx = torch.arange(B, device=device).unsqueeze(1).expand(-1, N)
 
-    voxel.index_put_((batch_idx, c, y, x), (2* p -1) * torch.ones_like(t, dtype=torch.float), accumulate=True) 
-    voxel[voxel > 2] = 2.0  # Clip values to [0, 1]
-    voxel[voxel < -6] = -2.0
-    return voxel 
+# <<<<<<< HEAD
+#     voxel.index_put_((batch_idx, c, y, x), (2* p -1) * torch.ones_like(t, dtype=torch.float), accumulate=True) 
+#     voxel[voxel > 2] = 2.0  # Clip values to [0, 1]
+#     voxel[voxel < -6] = -2.0
+#     return voxel 
+# =======
+    voxel.index_put_((batch_idx, c, y, x), p * torch.ones_like(t, dtype=torch.float), accumulate=True)
+
+    ## add random events to all batche and channels
+    
+    return voxel.to(torch.int8)
 def eventstohistogram(events, height=260, width=346):
         B, N, _ = events.shape
         x = (events[:, :, 1] * width).long().clamp(0, width - 1)
@@ -47,8 +63,8 @@ def eventstohistogram(events, height=260, width=346):
 
 def add_frame_to_video(video_writer, images):
     if images[0].shape[-1] == 4:
-        y = torch.round(images[0][0,:,1] * 346)
-        x = torch.round(images[0][0,:,2] * 260)
+        y = torch.round(images[0][0,:,1])
+        x = torch.round(images[0][0,:,2])
         img = torch.zeros(260, 346).to(images[0].device)
         img[x.long(), y.long()] = 1
     else:
