@@ -26,8 +26,6 @@ class dataviewer:
         self.slicer = None
         self.filter = None
         self.reader = None
-        self.events_history = [torch.zeros(1, 4, dtype=torch.float32, device=self.device) for _ in range(5)]  # History of 5 frames
-
     def retrieveEvents(self, events):
         self.instant_events = events
     def setModel(self, model):
@@ -36,39 +34,39 @@ class dataviewer:
         self.model.height = self.height
         self.model.eval()
         self.model.to(self.device)
-    def extractEvents(self, events, reversex = False):
+    def extractEvents(self, reversex = False):
 
-        xs = self.width - events["x"] -1 if reversex else events["x"]
-        ys = events["y"]
-        ps = 2 * events["polarity"] - 1 if reversex else  2 *events["p"] - 1
-        ts = events["timestamp"] if reversex else  events["t"] *1e-6
+        xs = self.width - self.events["x"] -1 if reversex else self.events["x"]
+        ys = self.events["y"]
+        ps = 2 * self.events["polarity"] - 1 if reversex else  2 *self.events["p"] - 1
+        ts = self.events["timestamp"] if reversex else  self.events["t"] *1e-6
         events_tensor = torch.stack(( torch.tensor(ts.copy()).float(), torch.tensor(xs.copy() / self.width).float(),
                                             torch.tensor(ys.copy() / self.height).float(), 
                                             torch.tensor(ps.copy()).float()), dim=1)  # [N, 4].long()
         img = np.zeros((self.height, self.width, 3), dtype=np.uint8)
         img[ys[ps == 1], xs[ps == 1]] = (255, 255, 255)  # White for polarity 1
         img[ys[ps == 0], xs[ps == 0]] = (255, 0, 0)      # Blue for polarity 0
-
-
-        return events_tensor.to(self.device), img
+        
+     
+        return events_tensor, img
     def selectEvents(self, filtered_events):
         filtered_events = filtered_events.numpy().copy()
         if self.events is None:
-            filtered_events = filtered_events.copy()
+            self.events = filtered_events.copy()
         else:
-            filtered_events = filtered_events
-        return filtered_events
-    def predict(self):
-        self.events_history[0:-1] = self.events_history[1:]  # Shift history
-        self.events_history[-1] = self.events
-        events_tensor = torch.concat(self.events_history, dim=0)
+            self.events = filtered_events
+    def predict(self,events_tensor):
+        mask = torch.ones((events_tensor.shape[0],), dtype=torch.bool)
         seq_events = events_tensor.unsqueeze(0).unsqueeze(0).to(self.device)
-        predictions, encodings = self.model(seq_events)
+        seq_masks = mask.unsqueeze(0).unsqueeze(0).to(self.device)
+        predictions, encodings = self.model(seq_events, seq_masks)
+        
+        
         return predictions
         ## crop image to 246, 346
         # merge the predictions into the image
     def mergePredictions(self, img, predictions):   
-        
+
         pred = predictions[0, 0].detach().cpu().numpy()
         pred = (pred * 255).astype(np.uint8)
         pred = cv2.applyColorMap(pred, cv2.COLORMAP_JET)
@@ -78,7 +76,6 @@ class dataviewer:
         img = cv2.resize(img, (640, 640), interpolation=cv2.INTER_LINEAR)
         return img
     def showImage(self, img):
-        
         cv2.imshow(self.window_name, img)
         key = cv2.waitKey(1)
         if key == 27:  # ESC to quit
@@ -127,11 +124,7 @@ class dataviewer39(dataviewer): ## Davis
             # Draw events: polarity 1 as white, 0 as blue (or any color you like)
             self.selectEvents(filtered_events)
             events_tensor, img = self.extractEvents(reversex=True)
-            
-            self.events_history[0:-1] = self.events_history[1:]  # Shift history
-            self.events_history[-1] = events_tensor  # Add new events to history
             ## from float 32 to float 16
-            events_tensor = self.events_history.flatten(0, 1).to(self.device)
             predictions = self.predict(events_tensor)
             merged_img = self.mergePredictions(img, predictions)
             self.showImage(merged_img)
@@ -151,12 +144,12 @@ class dataviewer312(dataviewer):  ## prophesee
         for slice in self.slicer:
             events_buf = EventCDBuffer()
             self.activity_filter.process_events(slice.events, events_buf)
-            events = slice.events
-            filtered_events = self.selectEvents(events_buf)
-            if len(filtered_events)  == 0:
+
+            self.selectEvents(events_buf)
+            if len(self.events)  == 0:
                 continue
-            events_processed, img = self.extractEvents(filtered_events, reversex=False)
-            self.events = events_processed
-            predictions = self.predict()
+            events_tensor, img = self.extractEvents(reversex=False)
+            ## from float 32 to float 16
+            predictions = self.predict(events_tensor)
             merged_img = self.mergePredictions(img, predictions)
             self.showImage(merged_img)

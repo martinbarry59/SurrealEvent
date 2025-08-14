@@ -5,46 +5,29 @@ from  .EventSurrealLayers import Encoder, Decoder, ConvLSTM
 from utils.functions import eventstohistogram
 import math
 class BestOfBothWorld(nn.Module):
-    def __init__(self, input_dim=4, input_channels = 2, model_type = "BOBWFF", embed_dim=256, depth=12, heads=8, width=346, height=260, num_queries=64):
+    def __init__(self, input_dim=4, input_channels = 2, model_type = "BOBWFF", embed_dim=128, depth=6, heads=4, width=346, height=260, num_queries=128):
         super().__init__()
         self.width = width
         self.height = height
         self.num_queries = num_queries
         self.model_type = model_type
-        
-        self.method = "add"
+        self.temperature = nn.Parameter(torch.tensor(0.07))  # start from default
+        self.model_type = "BOBVEG"
         # Embed each event (t, x, y, p)
         add_channels = 1 if "FF" in self.model_type else 0
         self.encoder = Encoder(input_channels+add_channels)
         self.encoder_channels = [32, 24, 32, 64, 1280]
         
-        
+        lstm_hidden=256
+        lstm_layers=2
         self.init_transformer(input_dim, embed_dim, depth, heads)
-
-        if "LSTM" in self.model_type:
-            self.convlstm = ConvLSTM(
-                input_dim=self.encoder_channels[4],
-                hidden_dims=[128, 128],
-                kernel_size=3,
-                num_layers=2
-            )
-            self.encoder_channels = self.encoder_channels[:-1] + [128]
-        else: 
-            self.estimated_depth = None
-
-
-        
-
-        self.decoder = Decoder(self.encoder_channels, self.method)
-
-        self.final_conv = nn.Sequential(
-            nn.Conv2d(self.encoder_channels[0] + add_channels, 32, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(32, 1, kernel_size=1),
-            nn.Sigmoid()
-        ) 
-
-        
+        self.lstm = nn.LSTM(128*9*11 + 1280*9*11, lstm_hidden, num_layers=lstm_layers, batch_first=True)
+        self.projector = nn.Sequential(
+            nn.Linear(lstm_hidden, lstm_hidden),
+            nn.ReLU(),
+            nn.Linear(lstm_hidden, lstm_hidden)
+        )
+       
     def init_transformer(self, input_dim=4, embed_dim=128, depth=6, heads=4):
         self.embedding = nn.Linear(input_dim, embed_dim)
 
@@ -69,7 +52,7 @@ class BestOfBothWorld(nn.Module):
         self.attn_proj = nn.MultiheadAttention(embed_dim=embed_dim, num_heads=heads, batch_first=True)
 
         self.resolution = 16 ## the lower the more parameters
-        self.channels = 16
+        self.channels = 128
         # Projection to spatial latent map from pooled tokens
         self.mheight = 9
         self.mwidth = 11
@@ -77,7 +60,7 @@ class BestOfBothWorld(nn.Module):
             nn.Linear(embed_dim * self.num_queries, self.mheight * self.mwidth * self.channels)
         )
         self.encoder_channels[-1] = self.encoder_channels[-1] + self.channels
-        
+        self.training = True
     def reset_states(self):
         if "LSTM" in self.model_type:
             self.convlstm.reset_hidden()
@@ -88,12 +71,6 @@ class BestOfBothWorld(nn.Module):
             self.convlstm.detach_hidden()
         else:
             self.estimated_depth = self.estimated_depth.detach()
-    def sinusoidal_embedding(t, dim):
-        div_term = torch.exp(torch.arange(0, dim, 2).float().to(t.device) * (-math.log(10000.0) / dim))
-        pe = torch.zeros(t.size(0), t.size(1), dim).to(t.device)
-        pe[..., 0::2] = torch.sin(t * div_term)
-        pe[..., 1::2] = torch.cos(t * div_term)
-        return pe
     def _build_sinusoidal_encoding(self, dim, max_len=10000):
         pe = torch.zeros(max_len, dim)
         position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
@@ -107,15 +84,22 @@ class BestOfBothWorld(nn.Module):
 
         # Token embedding + positional encoding
         # Token embedding + positional encoding
-        x_base = self.embedding(events)  # [B, N, D]
-
-        # Sinusoidal temporal encoding
-        t_norm = (events[:,:, 0] * 9999).long().clamp(0, 9999)  # scale time to [0, 9999]
-        pos_time = self.temporal_pe[:, t_norm].squeeze(0)  # [1, B, N, D] -> [B, N, D]
-
-        pos_xy = self.spatial_pe(events[:, :, 1:3])  # [B, N, D]
-        x = x_base + pos_time + pos_xy  # [B, N, D]
         
+        with torch.no_grad():
+            t_min = events[:, :, 0].min(dim=1, keepdim=True)[0]
+            t_max = events[:, :, 0].max(dim=1, keepdim=True)[0]
+            times = (events[:, :, 0] - t_min) / (t_max - t_min + 1e-6)
+            if self.training and torch.rand(1).item() < 0.3:
+                times = torch.zeros_like(times)
+
+            events[:, :, 0] = times
+            t_idx = (times * (self.temporal_pe.shape[1] - 1)).long().clamp(0, self.temporal_pe.shape[1] - 1)  # [B, N]
+            temporal_encoding = self.temporal_pe[0, t_idx]  # [B, N, D]
+            # print("times",torch.min(times), torch.max(times), torch.min(temporal_encoding), torch.max(temporal_encoding))
+        spatial_pe = self.spatial_pe(events[:, :, 1:3])
+        x = self.embedding(events) + temporal_encoding + spatial_pe
+
+        # print("x", torch.min(x), torch.max(x))
         # Transformer over tokens
         x = self.transformer(x, src_key_padding_mask=~mask)  # [B, N, D]
         # Attention pooling
@@ -129,33 +113,18 @@ class BestOfBothWorld(nn.Module):
         return x_latent
     def forward(self, event_sequence, mask_sequence):
         # events: [B, N, 4], mask: [B, N] (True = valid, False = padding)
-        
         lstm_inputs = []
-        timed_features = []
-
         for events, mask in zip(event_sequence, mask_sequence):
-
-            transformer_encoder = self.transformer_forward(events, mask)
-            # print("transformer_encoder shape:", transformer_encoder.shape)
-            # transformer_encoder = torch.zeros((events.shape[0], self.channels, self.mheight, self.mwidth), device=events.device)
-            
-            hist_events = eventstohistogram(events, self.height, self.width)
+            pooled = self.transformer_forward(events, mask)
+            hist_events = eventstohistogram(events)
             CNN_encoder, feats = self.encoder(hist_events)
-            timed_features.append(feats)
+        
         # Concatenate the outputs from the transformer and CNN
-            interpoted = F.interpolate(CNN_encoder, size=(self.mheight, self.mwidth), mode='bilinear', align_corners=False)
-            x = torch.cat([transformer_encoder, interpoted], dim=1)
+            x = torch.cat([pooled, CNN_encoder], dim=1)
+            lstm_inputs.append(x.flatten(start_dim=1))
 
-            lstm_inputs.append(x)
-        lstm_inputs = torch.stack(lstm_inputs, dim=1)
-        encodings = self.convlstm(lstm_inputs)
-        # Decode to full self.resolution depth map
-        outputs = []
-        
-        for t in range(encodings.shape[1]):
-            x = self.decoder(encodings[:,t], timed_features[t])
-        
-            outputs.append(self.final_conv(x))
-        outputs = torch.cat(outputs, dim=1)
+        lstm_inputs = torch.stack(lstm_inputs, dim=1)  # [B, T, D*num_queries]
+        lstm_out, _ = self.lstm(lstm_inputs)
+        final = self.projector(lstm_out)  # [B, T, D]
+        return final, lstm_out # For CPC
 
-        return outputs, encodings.detach()

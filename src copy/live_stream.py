@@ -27,12 +27,8 @@ def main():
     viewer = dataviewer()
     
     if checkpoint_path:
-        checkpoint_file = f'{checkpoint_path}/model_epoch_12_CONVLSTM.pth'
-        # checkpoint_file = f'{checkpoint_path}/model_epoch_8_CONVLSTM_best_SKIP_NOLSTM.pth'
-        if "NOLSTM" in checkpoint_file:
-            model = EConvlstm(model_type=network, skip_lstm=False)
-        else:
-            model = EConvlstm(model_type=network, skip_lstm=True)
+        checkpoint_file = f'{checkpoint_path}/model_epoch_11_CONVLSTM.pth'
+        model = EConvlstm(model_type=network)
         print(f"Loading checkpoint from {checkpoint_file}")
         try:
             model.load_state_dict(torch.load(checkpoint_file, map_location=device))
@@ -41,6 +37,11 @@ def main():
     model.to(device)
     viewer.setModel(model)
     viewer.run()
+    
+    
+        
+
+        
 
     cv2.destroyAllWindows()
 

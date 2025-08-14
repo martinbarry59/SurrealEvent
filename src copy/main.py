@@ -59,8 +59,8 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
     return sum(epoch_loss)/len(epoch_loss)
 
 def main():
-    batch_train = 1
-    batch_test = 1
+    batch_train = 2
+    batch_test = 2
     network = "CONVLSTM" # LSTM, Transformer, BOBWFF, BOBWLSTM
     
     ## set seed for reproducibility
