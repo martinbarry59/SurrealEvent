@@ -64,30 +64,30 @@ def process_output(mask):
 
 def forward_feed(model, data, device, train, step_size=1, start_seq=0, block_update=30, video_writer=None, zeroing=False, hotpixel=False):
     
-    
-    seq_events = []
-    seq_depths = []
-    seq_labels = []
-    max_t = start_seq + block_update * step_size if block_update > 0 else len(data[0]) - 1
-    for t in range(start_seq, max_t, step_size):  
-        datat = get_data(data, t) if not zeroing else get_data(data, start_seq)
-        events, depth = datat[:2]
-        ## add white noise (-1 or 1 ) with 10% probability
-        events, depth = events.to(device), depth.to(device)
-        events = events if not zeroing else events * 0
+    with torch.no_grad():
+        seq_events = []
+        seq_depths = []
+        seq_labels = []
+        max_t = start_seq + block_update * step_size if block_update > 0 else len(data[0]) - 1
+        for t in range(start_seq, max_t, step_size):  
+            datat = get_data(data, t) if not zeroing else get_data(data, start_seq)
+            events, depth = datat[:2]
+            ## add white noise (-1 or 1 ) with 10% probability
+            events, depth = events.to(device), depth.to(device)
+            events = events if not zeroing else events * 0
 
-        labels = None
+            labels = None
 
-        if len(datat) == 4:
-            labels = datat[3]
-        seq_events.append(events.to(torch.float32))
-        seq_depths.append(depth / 255)
-        if labels is not None:
-            seq_labels.append(labels)
-    ## convert the seq_labels to numpy array
-    seq_depths = torch.stack(seq_depths, dim=1)
-    if len(seq_labels) > 0:
-        seq_labels = np.array(seq_labels)
+            if len(datat) == 4:
+                labels = datat[3]
+            seq_events.append(events.to(torch.float32))
+            seq_depths.append(depth / 255)
+            if labels is not None:
+                seq_labels.append(labels)
+        ## convert the seq_labels to numpy array
+        seq_depths = torch.stack(seq_depths, dim=1)
+        if len(seq_labels) > 0:
+            seq_labels = np.array(seq_labels)
     
     predictions, encodings, seq_events = model(seq_events, train, hotpixel=hotpixel)
     with torch.no_grad():

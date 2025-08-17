@@ -18,7 +18,6 @@ class EConvlstm(nn.Module):
         
         self.mheight = 9
         self.mwidth = 11
-        self.voxel_bn = nn.BatchNorm2d(5, eps=1e-5, momentum=0.1)
 
         if "LSTM" in self.model_type:
             if self.skip_lstm:
@@ -100,7 +99,15 @@ class EConvlstm(nn.Module):
             print(f"  Histogram shape: {hist.shape}, Min: {hist.min().item()}, Max: {hist.max().item()}")
             print(f"  Histogram mean: {hist.mean().item()}, std: {hist.std().item()}")
 
-   
+    def robust_normalize(self, x, percentile=95):
+        """Camera-agnostic robust normalization"""
+        B = x.size(0)
+        x_flat = x.view(B, -1)
+        
+        x_min = torch.quantile(x_flat, 0.05, dim=1, keepdim=True).view(B, 1, 1, 1)
+        x_max = torch.quantile(x_flat, percentile/100, dim=1, keepdim=True).view(B, 1, 1, 1)
+
+        return 2 * torch.clamp((x - x_min) / (x_max - x_min + 1e-8), 0, 1) - 1
     def forward(self, event_sequence, training=False, hotpixel=False):
         # events: [B, N, 4], mask: [B, N] (True = valid, False = padding)
         
@@ -125,20 +132,22 @@ class EConvlstm(nn.Module):
                     events[:,:, 1] = events[:, :, 1].clamp(0, self.width-1)
                     events[:,:, 2] = events[:, :, 2].clamp(0, self.height-1)
                     hist_events = eventstovoxel(events, self.height, self.width, training = training, hotpixel=hotpixel).float()
-                    seq_events.append(hist_events)
+                    
+                    seq_events.append(hist_events.detach())
                 else:
                     hist_events = events
-            hist_events = self.voxel_bn(hist_events)
+            hist_events = self.robust_normalize(hist_events)
             CNN_encoder, feats = self.encoder(hist_events)
 
             CNN_encoder, feats = self.encoder(hist_events)
             print(f"encoder statistics: {CNN_encoder.shape}, {CNN_encoder.min().item()}, {CNN_encoder.max().item()}, {CNN_encoder.mean().item()}, {CNN_encoder.std().item()}")
             for i, f in enumerate(feats):
                 timed_features[i].append(f)
-            
+        
         # Concatenate the outputs from the transformer and CNN
             interpolated = F.interpolate(CNN_encoder, size=(self.mheight, self.mwidth), mode='bilinear', align_corners=False)
             lstm_inputs.append(interpolated)
+        del event_sequence
         lstm_inputs = torch.stack(lstm_inputs, dim=1)
         skip_outputs = []
         if self.skip_lstm:
