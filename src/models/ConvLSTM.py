@@ -18,6 +18,7 @@ class EConvlstm(nn.Module):
         
         self.mheight = 9
         self.mwidth = 11
+        self.voxel_bn = nn.BatchNorm2d(5, eps=1e-5, momentum=0.1)
 
         if "LSTM" in self.model_type:
             if self.skip_lstm:
@@ -99,7 +100,8 @@ class EConvlstm(nn.Module):
             print(f"  Histogram shape: {hist.shape}, Min: {hist.min().item()}, Max: {hist.max().item()}")
             print(f"  Histogram mean: {hist.mean().item()}, std: {hist.std().item()}")
 
-    def forward(self, event_sequence, mask_sequence = None):
+   
+    def forward(self, event_sequence, training=False, hotpixel=False):
         # events: [B, N, 4], mask: [B, N] (True = valid, False = padding)
         
         lstm_inputs = []
@@ -122,12 +124,12 @@ class EConvlstm(nn.Module):
                     events[:, :, 0] = (events[:, :, 0] - min_t) / denom
                     events[:,:, 1] = events[:, :, 1].clamp(0, self.width-1)
                     events[:,:, 2] = events[:, :, 2].clamp(0, self.height-1)
-                    
-                    hist_events = eventstovoxel(events, self.height, self.width).float()
-                    self.print_statistics(hist_events, events)
+                    hist_events = eventstovoxel(events, self.height, self.width, training = training, hotpixel=hotpixel).float()
                     seq_events.append(hist_events)
                 else:
                     hist_events = events
+            hist_events = self.voxel_bn(hist_events)
+            CNN_encoder, feats = self.encoder(hist_events)
 
             CNN_encoder, feats = self.encoder(hist_events)
             print(f"encoder statistics: {CNN_encoder.shape}, {CNN_encoder.min().item()}, {CNN_encoder.max().item()}, {CNN_encoder.mean().item()}, {CNN_encoder.std().item()}")
