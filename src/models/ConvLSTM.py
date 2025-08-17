@@ -124,11 +124,13 @@ class EConvlstm(nn.Module):
                     events[:,:, 2] = events[:, :, 2].clamp(0, self.height-1)
                     
                     hist_events = eventstovoxel(events, self.height, self.width).float()
+                    self.print_statistics(hist_events, events)
                     seq_events.append(hist_events)
                 else:
                     hist_events = events
 
             CNN_encoder, feats = self.encoder(hist_events)
+            print(f"encoder statistics: {CNN_encoder.shape}, {CNN_encoder.min().item()}, {CNN_encoder.max().item()}, {CNN_encoder.mean().item()}, {CNN_encoder.std().item()}")
             for i, f in enumerate(feats):
                 timed_features[i].append(f)
             
@@ -156,5 +158,6 @@ class EConvlstm(nn.Module):
         
             outputs.append(self.final_conv(x))
         outputs = torch.cat(outputs, dim=1)
-
+        print(f"Final outputs shape: {outputs.shape}, min: {outputs.min().item()}, max: {outputs.max().item()}, mean: {outputs.mean().item()}, std: {outputs.std().item()}")
+        exit()
         return outputs, encodings.detach(), seq_events

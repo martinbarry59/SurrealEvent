@@ -4,17 +4,19 @@ import cv2
 from datetime import timedelta
 import numpy as np
 import sys
-if sys.version_info.major != 3 or sys.version_info.minor < 12:
-    import dv_processing as dv
-else:
+import dv_processing as dv
+
+# if sys.version_info.major != 3 or sys.version_info.minor < 12:
+#     import dv_processing as dv
+# else:
     
-    sys.path.append("/usr/lib/python3/dist-packages")
-    from metavision_sdk_stream import Camera, CameraStreamSlicer, SliceCondition
-    from metavision_sdk_cv import ActivityNoiseFilterAlgorithm
-    from metavision_sdk_base import EventCDBuffer
+sys.path.append("/usr/lib/python3/dist-packages")
+from metavision_sdk_stream import Camera, CameraStreamSlicer, SliceCondition
+from metavision_sdk_cv import ActivityNoiseFilterAlgorithm
+from metavision_sdk_base import EventCDBuffer
 
 class dataviewer:
-    def __init__(self):
+    def __init__(self, camera):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.max_events = 1000
         self.width, self.height = None, None
@@ -26,8 +28,8 @@ class dataviewer:
         self.slicer = None
         self.filter = None
         self.reader = None
-        self.events_history = [torch.zeros(1, 4, dtype=torch.float32, device=self.device) for _ in range(5)]  # History of 5 frames
-
+        self.events_history = [torch.zeros(1, 4, dtype=torch.float32, device=self.device) for _ in range(1)]  # History of 5 frames
+        self.camera = camera
     def retrieveEvents(self, events):
         self.instant_events = events
     def setModel(self, model):
@@ -37,36 +39,27 @@ class dataviewer:
         self.model.eval()
         self.model.to(self.device)
     def extractEvents(self, events, reversex = False):
-
         xs = self.width - events["x"] -1 if reversex else events["x"]
         ys = events["y"]
         ps = 2 * events["polarity"] - 1 if reversex else  2 *events["p"] - 1
-        ts = events["timestamp"] if reversex else  events["t"] *1e-6
-        events_tensor = torch.stack(( torch.tensor(ts.copy()).float(), torch.tensor(xs.copy() / self.width).float(),
-                                            torch.tensor(ys.copy() / self.height).float(), 
+        
+        ts = events["timestamp"] if reversex else  events["t"]
+        ts = ts - ts.min()  # Normalize timestamps to start from 0
+        events_tensor = torch.stack(( torch.tensor(ts.copy()), torch.tensor(xs.copy()).float(),
+                                            torch.tensor(ys.copy()).float(), 
                                             torch.tensor(ps.copy()).float()), dim=1)  # [N, 4].long()
-        img = np.zeros((self.height, self.width, 3), dtype=np.uint8)
-        img[ys[ps == 1], xs[ps == 1]] = (255, 255, 255)  # White for polarity 1
-        img[ys[ps == 0], xs[ps == 0]] = (255, 0, 0)      # Blue for polarity 0
+       
 
-
-        return events_tensor.to(self.device), img
-    def selectEvents(self, filtered_events):
-        filtered_events = filtered_events.numpy().copy()
-        if self.events is None:
-            filtered_events = filtered_events.copy()
-        else:
-            filtered_events = filtered_events
-        return filtered_events
+        return events_tensor.to(self.device)
+    
     def predict(self):
         self.events_history[0:-1] = self.events_history[1:]  # Shift history
         self.events_history[-1] = self.events
         events_tensor = torch.concat(self.events_history, dim=0)
         seq_events = events_tensor.unsqueeze(0).unsqueeze(0).to(self.device)
-        predictions, encodings = self.model(seq_events)
-        return predictions
-        ## crop image to 246, 346
-        # merge the predictions into the image
+        predictions, encodings, seq_events = self.model(seq_events)
+        return predictions, seq_events
+
     def mergePredictions(self, img, predictions):   
         
         pred = predictions[0, 0].detach().cpu().numpy()
@@ -84,33 +77,41 @@ class dataviewer:
         if key == 27:  # ESC to quit
             cv2.destroyAllWindows()
             exit(0)
+    def processEvents(self, events, reversex=False):
+
+        events_tensor = self.extractEvents(events.numpy().copy(), reversex=reversex)
+        self.events = events_tensor
+        predictions, seq_events = self.predict()
+        self.predictions = predictions.clone()
+
+        img = np.sum(seq_events[0][0].detach().cpu().numpy(), axis=0).astype(np.uint8)
+        img[img!=0] = 255  # Set non-zero pixels to white
+        img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+        merged_img = self.mergePredictions(img, predictions)
+        self.showImage(merged_img)
     def run(self):
         raise NotImplementedError("This method should be implemented in subclasses")
-class dataviewer39(dataviewer): ## Davis
-    def __init__(self):
+class dataviewerdavis(dataviewer): ## Davis
+    def __init__(self, camera):
         print("Using dv_processing for event processing")
-        super().__init__()
+        super().__init__(camera)
         
-        self.reader = dv.io.camera.open()
-        
-        self.width, self.height = self.reader.getEventResolution()
+
+        self.width, self.height = self.camera.getEventResolution()
 
         self.slicer = dv.EventStreamSlicer()
         self.filter = dv.noise.BackgroundActivityNoiseFilter((self.width, self.height), 
-                                                        backgroundActivityDuration=timedelta(milliseconds=10))
+                                                        backgroundActivityDuration=timedelta(milliseconds=100))
         
         self.slicer.doEveryTimeInterval(timedelta(milliseconds=60),self.retrieveEvents)
     
-    # def generateEvents(self):
-    #     return self.events
     def run(self):
 
-        while self.reader.isRunning():
+        while self.camera.isRunning():
             self.instant_events = None
 
     # Read batch of events
-            events = self.reader.getNextEventBatch()
-            print(events)
+            events = self.camera.getNextEventBatch()
             if events is None or len(events)== 0:
                 continue
 
@@ -119,44 +120,25 @@ class dataviewer39(dataviewer): ## Davis
                 continue
             self.filter.accept(self.instant_events)
             filtered_events = self.instant_events#self.filter.generateEvents()
-
-            # In your event processing loop:
+            self.processEvents(filtered_events, reversex=True)
+           
             
-            # Create a black image
             
-            # Draw events: polarity 1 as white, 0 as blue (or any color you like)
-            self.selectEvents(filtered_events)
-            events_tensor, img = self.extractEvents(reversex=True)
-            
-            self.events_history[0:-1] = self.events_history[1:]  # Shift history
-            self.events_history[-1] = events_tensor  # Add new events to history
-            ## from float 32 to float 16
-            events_tensor = self.events_history.flatten(0, 1).to(self.device)
-            predictions = self.predict(events_tensor)
-            merged_img = self.mergePredictions(img, predictions)
-            self.showImage(merged_img)
-class dataviewer312(dataviewer):  ## prophesee
-    def __init__(self):
-        super().__init__()
+class dataviewerprophesee(dataviewer):  ## prophesee
+    def __init__(self, camera):
+        
+        super().__init__(camera)
         
         print("Using metavision_sdk_stream for event processing")
-        self.camera = Camera.from_first_available()
         self.width, self.height = self.camera.width(), self.camera.height()
         slice_condition = SliceCondition.make_n_us(100000)
         self.slicer = CameraStreamSlicer(self.camera.move(), slice_condition=slice_condition)
         self.activity_filter = ActivityNoiseFilterAlgorithm(self.width, self.height, 20000)
     def run(self):
         
-        
         for slice in self.slicer:
             events_buf = EventCDBuffer()
             self.activity_filter.process_events(slice.events, events_buf)
-            events = slice.events
-            filtered_events = self.selectEvents(events_buf)
-            if len(filtered_events)  == 0:
-                continue
-            events_processed, img = self.extractEvents(filtered_events, reversex=False)
-            self.events = events_processed
-            predictions = self.predict()
-            merged_img = self.mergePredictions(img, predictions)
-            self.showImage(merged_img)
+            
+            self.processEvents(events_buf, reversex=False)
+            
