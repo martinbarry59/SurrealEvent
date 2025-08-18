@@ -55,7 +55,6 @@ class ConvLSTM(nn.Module):
         if self.h is None:
             self._init_hidden(batch_size, height, width, input_seq.device)
 
-
         outputs = []
         for t in range(seq_len):
             x = input_seq[:, t]

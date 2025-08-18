@@ -1,4 +1,3 @@
-
 import torch
 import cv2
 
@@ -140,46 +139,102 @@ def eventstovoxel(events, height=260, width=346, bins=5, training=True, hotpixel
     Converts a batch of events into a voxel grid with optional augmentations.
     
     Args:
-        events: [B, N, 4] - (t, x, y, p) with t ∈ [0, 1], x ∈ [0, 1], y ∈ [0, 1]
+        events: [B, N, 4] or [B, T, N, 4] - (t, x, y, p) with t ∈ [0, 1], x ∈ [0, 1], y ∈ [0, 1]
         height, width: spatial resolution
         bins: number of time bins
         training: whether model is in training mode
         aug_prob: probability of applying augmentations during training
 
     Returns:
-        voxel: [B, bins, H, W] voxel grid
+        voxel: [B, bins, H, W] or [B, T, bins, H, W] voxel grid
     """
-    B, N, _ = events.shape
     device = events.device
-
-    # Apply augmentations during training
-    if hotpixel:
-        events = add_hot_pixels(events, device, width, height)
-    if training:
-        events = apply_event_augmentations(events, training=training, aug_prob=aug_prob, width=width, height=height)
-        B, N, _ = events.shape  # Update shape after augmentations
-    # Add hot pixels (realistic camera noise)
     
-    # Add random noise events (keeping your existing augmentation)
+    # Handle both 3D and 4D input tensors
+    if events.dim() == 4:  # [B, T, N, 4]
+        B, T, N, _ = events.shape
+        # Reshape to [B*T, N, 4] for processing
+        events_reshaped = events.view(B * T, N, 4)
+        
+        # Apply augmentations during training
+        if hotpixel:
+            events_reshaped = add_hot_pixels(events_reshaped, device, width, height)
+        if training:
+            events_reshaped = apply_event_augmentations(events_reshaped, training=training, aug_prob=aug_prob, width=width, height=height)
+            _, N, _ = events_reshaped.shape  # Update N after augmentations
+        
+        # Convert normalized coordinates to pixel indices
+        x = (events_reshaped[:, :, 1]).long().clamp(0, width - 1)
+        y = (events_reshaped[:, :, 2]).long().clamp(0, height - 1)
+        t = (events_reshaped[:, :, 0] * bins).long().clamp(0, bins - 1)
+        p = events_reshaped[:, :, 3].long()
+        neg_p = (p < 0).long()
+        pos_p = (p > 0).long()
+        
+        voxel = torch.zeros(B * T, 2 * bins, height, width, device=device)
+        batch_idx = torch.arange(B * T, device=device).unsqueeze(1).expand(-1, N)
+
+        voxel.index_put_((batch_idx, t, y, x), pos_p * torch.ones_like(t, dtype=torch.float), accumulate=True)
+        voxel.index_put_((batch_idx, t + bins, y, x), neg_p * torch.ones_like(t, dtype=torch.float), accumulate=True)
+        
+        # Reshape back to [B, T, 2*bins, H, W]
+        return voxel.view(B, T, 2 * bins, height, width)
     
-    B, N, _ = events.shape  # Final shape after all augmentations
+    else:  # [B, N, 4] - original behavior
+        B, N, _ = events.shape
+        
+        # Apply augmentations during training
+        if hotpixel:
+            events = add_hot_pixels(events, device, width, height)
+        if training:
+            events = apply_event_augmentations(events, training=training, aug_prob=aug_prob, width=width, height=height)
+            B, N, _ = events.shape  # Update shape after augmentations
+        
+        # Convert normalized coordinates to pixel indices
+        x = (events[:, :, 1]).long().clamp(0, width - 1)
+        y = (events[:, :, 2]).long().clamp(0, height - 1)
+        t = (events[:, :, 0] * bins).long().clamp(0, bins - 1)
+        p = events[:, :, 3].long()
+        neg_p = (p < 0).long()
+        pos_p = (p > 0).long()
+        
+        voxel = torch.zeros(B, 2 * bins, height, width, device=device)
+        batch_idx = torch.arange(B, device=device).unsqueeze(1).expand(-1, N)
 
-    # Convert normalized coordinates to pixel indices
-    x = (events[:, :, 1]).long().clamp(0, width - 1)
-    y = (events[:, :, 2]).long().clamp(0, height - 1)
-    t = (events[:, :, 0] * bins).long().clamp(0, bins - 1)
-    p = events[:, :, 3].long()
-    neg_p = (p < 0).long()  # Convert polarity to 0/1 for voxel channel indexing
-    pos_p = (p > 0).long()  # Convert polarity to 0/1 for voxel channel indexing
-    # Final channel index: [B, N]
-    c = t
-    voxel = torch.zeros(B, 2 * bins, height, width, device=device)
-    batch_idx = torch.arange(B, device=device).unsqueeze(1).expand(-1, N)
-
-    voxel.index_put_((batch_idx, c, y, x), pos_p * torch.ones_like(t, dtype=torch.float), accumulate=True)
-    voxel.index_put_((batch_idx, c + bins, y, x), neg_p * torch.ones_like(t, dtype=torch.float), accumulate=True)
-    return voxel
+        voxel.index_put_((batch_idx, t, y, x), pos_p * torch.ones_like(t, dtype=torch.float), accumulate=True)
+        voxel.index_put_((batch_idx, t + bins, y, x), neg_p * torch.ones_like(t, dtype=torch.float), accumulate=True)
+        
+        return voxel
 def eventstohistogram(events, height=260, width=346):
+    """
+    Convert events to histogram representation.
+    
+    Args:
+        events: [B, N, 4] or [B, T, N, 4] - (t, x, y, p)
+        
+    Returns:
+        hist: [B, 2, H, W] or [B, T, 2, H, W] histogram
+    """
+    device = events.device
+    
+    # Handle both 3D and 4D input tensors
+    if events.dim() == 4:  # [B, T, N, 4]
+        B, T, N, _ = events.shape
+        # Reshape to [B*T, N, 4] for processing
+        events_reshaped = events.view(B * T, N, 4)
+        
+        x = (events_reshaped[:, :, 1] * width).long().clamp(0, width - 1)
+        y = (events_reshaped[:, :, 2] * height).long().clamp(0, height - 1)
+        p = events_reshaped[:, :, 3].long().clamp(0, 1)
+
+        hist = torch.zeros(B * T, 2, height, width, device=device)
+        batch_idx = torch.arange(B * T, device=device).unsqueeze(1).expand(-1, N)
+        hist.index_put_((batch_idx, p, y, x), torch.abs(events_reshaped[:, :, 3]), accumulate=True)
+        
+        # Reshape back to [B, T, 2, H, W]
+        return hist.view(B, T, 2, height, width)
+    
+    else:  # [B, N, 4] - original behavior
         B, N, _ = events.shape
         x = (events[:, :, 1] * width).long().clamp(0, width - 1)
         y = (events[:, :, 2] * height).long().clamp(0, height - 1)
@@ -227,3 +282,30 @@ def calc_topk_accuracy(output, target, topk=(1,)):
         correct_k = correct[:k].contiguous().view(-1).float().sum(0)
         res.append(correct_k.mul_(1 / batch_size))
     return res
+
+def normalize_event_times_vectorized(events):
+    """
+    Vectorized time normalization for event sequences.
+    
+    Args:
+        events: [B, T, N, 4] or [B, N, 4] - (t, x, y, p)
+    
+    Returns:
+        normalized events with t ∈ [0, 1] per batch/timestep
+    """
+    if events.dim() == 4:  # [B, T, N, 4]
+        # Normalize time per batch and timestep
+        min_t = torch.min(events[:, :, :, 0], dim=2, keepdim=True)[0]  # [B, T, 1]
+        max_t = torch.max(events[:, :, :, 0], dim=2, keepdim=True)[0]  # [B, T, 1]
+        denom = (max_t - min_t)
+        denom[denom < 1e-8] = 1.0  # Avoid division by zero
+        events[:, :, :, 0] = (events[:, :, :, 0] - min_t) / denom
+    else:  # [B, N, 4]
+        # Normalize time per batch
+        min_t = torch.min(events[:, :, 0], dim=1, keepdim=True)[0]  # [B, 1]
+        max_t = torch.max(events[:, :, 0], dim=1, keepdim=True)[0]  # [B, 1]
+        denom = (max_t - min_t)
+        denom[denom < 1e-8] = 1.0  # Avoid division by zero
+        events[:, :, 0] = (events[:, :, 0] - min_t) / denom
+    
+    return events
