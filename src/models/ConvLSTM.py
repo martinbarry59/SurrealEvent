@@ -1,3 +1,4 @@
+from asyncio import events
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -90,9 +91,7 @@ class EConvlstm(nn.Module):
    
     def forward(self, event_sequence, training=False, hotpixel=False):
         # events: [B, N, 4], mask: [B, N] (True = valid, False = padding)
-        
-        lstm_inputs = []
-        timed_features = []  # For skip connections
+     
         seq_events = []
         for events in event_sequence:
             # normalise t per batch
@@ -115,36 +114,33 @@ class EConvlstm(nn.Module):
                     seq_events.append(hist_events)
                 else:
                     hist_events = events
-        events = torch.stack(seq_events, dim=0).permute(1, 0, 2, 3, 4).contiguous()  # [B, T, C, H, W]
+        events = torch.stack(seq_events, dim=1)  # [B, T, C, H, W]
         B, T, C, H, W = events.shape
         
         batch_flatten = events.view(B*T, C, H, W)  # Flatten batch and time
         hist_events = self.voxel_bn(batch_flatten)
         
         CNN_encoder, feats = self.encoder(hist_events)
-       
-        timed_features = [feat.view(B, T, *feat.shape[1:]).permute(1,0,2, 3, 4) for feat in feats]  # [T, B, C, H, W]
-        
+               
     # Concatenate the outputs from the transformer and CNN
         interpolated = F.interpolate(CNN_encoder, size=(self.mheight, self.mwidth), mode='bilinear', align_corners=False)
         interpolated = interpolated.view(B, T, *interpolated.shape[1:])  # Reshape back to [B, T, C, H, W]
         
-        lstm_inputs = interpolated.permute(1,0,2, 3, 4)  # [B, C, T, H, W]
         skip_outputs = []
         if self.skip_lstm:
             for i, skip_lstm in enumerate(self.skip_convlstms):
                 # Stack features for this skip level: [B, T, C, H, W]
-                skip_out = skip_lstm(timed_features[i])  # Output: [B, T, C, H, W]
+                skip_out = skip_lstm(feats[i].view(B, T, *feats[i].shape[1:]))  # Output: [B, T, C, H, W]
                 skip_outputs.append(skip_out.clone())
-        encodings = self.convlstm(lstm_inputs)
+        encodings = self.convlstm(interpolated)
         flatten_encodings = encodings.view(B*T, *encodings.shape[2:])  # [B, T, C, H, W]
         # Decode to full self.resolution depth map
         outputs = []
         
-        flatten_features = [f.view(B*T, *f.shape[2:]) for f in skip_outputs]  # Flatten time dimension
         
-        x = self.decoder(flatten_encodings, flatten_features)
+        x = self.decoder(flatten_encodings, [f.view(B*T, *f.shape[2:]) for f in skip_outputs])
         
         outputs = self.final_conv(x)  # [T*B, C, H, W]
         outputs = outputs.view(B,T,H,W)
+        del hist_events, CNN_encoder, feats, x, flatten_encodings
         return outputs, encodings.detach(), seq_events

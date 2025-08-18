@@ -170,27 +170,12 @@ def sequence_for_LSTM(data, model, criterion, optimizer, device,
                                                               start_seq=start_seq, block_update=block_update, 
                                                               video_writer=video_writer, zeroing=zeroing, hotpixel=hotpixel)
 
-        # if n == 0 and len(labels) > 0:
-        #     with torch.no_grad():
-        #         labels = np.permute_dims(labels, (1, 0))
-        #         ## flatten labels
-        #         labels = labels.reshape(-1)
-        #         video_labels = labels.copy()
-        #         video_labels = np.array([ l.split("_t_")[0] for l in video_labels])
-        #         ## repeat to all other dimensions
-        #         ## flatten encodings
-        #         flattened_encodings = encodings.reshape(-1, encodings.shape[-1])
-        #         # print(encodings.shape, predictions.shape, flattened_encodings.shape, labels.shape, unique_labels.shape)
-        #         tsne = TSNE(n_components=2, verbose=0, perplexity=50, max_iter=2000).fit_transform(
-        #             flattened_encodings.cpu().numpy()
-        #         )
-        #         plotly_TSNE(tsne, labels, video_labels, f"{model.model_type}")
         
         
-        ## compute SSIM loss
-        print(predictions.shape, depths.shape)
-        exit()
+
         loss = compute_mixed_loss(predictions, depths, criterion, epoch)
+        predictions = predictions.detach()
+        depths = depths.detach()
         # if not train:
         if train:
             scaler.scale(loss).backward()
@@ -202,7 +187,7 @@ def sequence_for_LSTM(data, model, criterion, optimizer, device,
             # exit()
         model.detach_states()
         loss_avg.append(loss.item())
-        del loss, encodings
+        del loss
         with torch.no_grad():
             predictions = predictions.view(-1, 1, predictions.shape[-2], predictions.shape[-1]).detach()
             depths = depths.view(-1, 1, depths.shape[-2], depths.shape[-1]).detach()
