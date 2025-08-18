@@ -188,6 +188,8 @@ def sequence_for_LSTM(data, model, criterion, optimizer, device,
         
         
         ## compute SSIM loss
+        print(predictions.shape, depths.shape)
+        exit()
         loss = compute_mixed_loss(predictions, depths, criterion, epoch)
         # if not train:
         if train:

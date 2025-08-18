@@ -92,7 +92,7 @@ class EConvlstm(nn.Module):
         # events: [B, N, 4], mask: [B, N] (True = valid, False = padding)
         
         lstm_inputs = []
-        timed_features = [[] for _ in range(len(self.encoder_channels))]  # For skip connections
+        timed_features = []  # For skip connections
         seq_events = []
         for events in event_sequence:
             # normalise t per batch
@@ -115,35 +115,36 @@ class EConvlstm(nn.Module):
                     seq_events.append(hist_events)
                 else:
                     hist_events = events
-            hist_events = self.voxel_bn(hist_events)
-            CNN_encoder, feats = self.encoder(hist_events)
-
-            for i, f in enumerate(feats):
-                timed_features[i].append(f)
-        # Concatenate the outputs from the transformer and CNN
-            interpolated = F.interpolate(CNN_encoder, size=(self.mheight, self.mwidth), mode='bilinear', align_corners=False)
-            lstm_inputs.append(interpolated)
+        events = torch.stack(seq_events, dim=0).permute(1, 0, 2, 3, 4).contiguous()  # [B, T, C, H, W]
+        B, T, C, H, W = events.shape
         
-        lstm_inputs = torch.stack(lstm_inputs, dim=1)
+        batch_flatten = events.view(B*T, C, H, W)  # Flatten batch and time
+        hist_events = self.voxel_bn(batch_flatten)
+        
+        CNN_encoder, feats = self.encoder(hist_events)
+       
+        timed_features = [feat.view(B, T, *feat.shape[1:]).permute(1,0,2, 3, 4) for feat in feats]  # [T, B, C, H, W]
+        
+    # Concatenate the outputs from the transformer and CNN
+        interpolated = F.interpolate(CNN_encoder, size=(self.mheight, self.mwidth), mode='bilinear', align_corners=False)
+        interpolated = interpolated.view(B, T, *interpolated.shape[1:])  # Reshape back to [B, T, C, H, W]
+        
+        lstm_inputs = interpolated.permute(1,0,2, 3, 4)  # [B, C, T, H, W]
         skip_outputs = []
         if self.skip_lstm:
             for i, skip_lstm in enumerate(self.skip_convlstms):
                 # Stack features for this skip level: [B, T, C, H, W]
-                skip_feats = torch.stack(timed_features[i], dim=1)
-                skip_out = skip_lstm(skip_feats)  # Output: [B, T, C, H, W]
+                skip_out = skip_lstm(timed_features[i])  # Output: [B, T, C, H, W]
                 skip_outputs.append(skip_out.clone())
         encodings = self.convlstm(lstm_inputs)
+        flatten_encodings = encodings.view(B*T, *encodings.shape[2:])  # [B, T, C, H, W]
         # Decode to full self.resolution depth map
         outputs = []
         
-        for t in range(encodings.shape[1]):
-            if self.skip_lstm:
-                skip_feats_t = [skip_outputs[i][:, t] for i in range(len(skip_outputs))]
-            else:
-                skip_feats_t = [timed_features[i][t] for i in range(len(timed_features))]
-            x = self.decoder(encodings[:, t], skip_feats_t)
+        flatten_features = [f.view(B*T, *f.shape[2:]) for f in skip_outputs]  # Flatten time dimension
         
-            outputs.append(self.final_conv(x))
-        outputs = torch.cat(outputs, dim=1)
-
+        x = self.decoder(flatten_encodings, flatten_features)
+        
+        outputs = self.final_conv(x)  # [T*B, C, H, W]
+        outputs = outputs.view(B,T,H,W)
         return outputs, encodings.detach(), seq_events
