@@ -2,7 +2,6 @@
 import torch
 import cv2
 
-
 def apply_event_augmentations(events, training=True, aug_prob=0.5, width=346, height=260):
     """
     Apply various augmentations to event data to improve robustness.
@@ -170,20 +169,15 @@ def eventstovoxel(events, height=260, width=346, bins=5, training=True, hotpixel
     y = (events[:, :, 2]).long().clamp(0, height - 1)
     t = (events[:, :, 0] * bins).long().clamp(0, bins - 1)
     p = events[:, :, 3].long()
-    
+    neg_p = (p < 0).long()  # Convert polarity to 0/1 for voxel channel indexing
+    pos_p = (p > 0).long()  # Convert polarity to 0/1 for voxel channel indexing
     # Final channel index: [B, N]
     c = t
-    voxel = torch.zeros(B, bins, height, width, device=device)
+    voxel = torch.zeros(B, 2 * bins, height, width, device=device)
     batch_idx = torch.arange(B, device=device).unsqueeze(1).expand(-1, N)
 
-# <<<<<<< HEAD
-#     voxel.index_put_((batch_idx, c, y, x), (2* p -1) * torch.ones_like(t, dtype=torch.float), accumulate=True) 
-#     voxel[voxel > 2] = 2.0  # Clip values to [0, 1]
-#     voxel[voxel < -6] = -2.0
-#     return voxel 
-# =======
-    voxel.index_put_((batch_idx, c, y, x), p * torch.ones_like(t, dtype=torch.float), accumulate=True)
-
+    voxel.index_put_((batch_idx, c, y, x), pos_p * torch.ones_like(t, dtype=torch.float), accumulate=True)
+    voxel.index_put_((batch_idx, c + bins, y, x), neg_p * torch.ones_like(t, dtype=torch.float), accumulate=True)
     return voxel
 def eventstohistogram(events, height=260, width=346):
         B, N, _ = events.shape
