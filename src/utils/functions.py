@@ -1,6 +1,7 @@
 import torch
 import cv2
 
+
 def apply_event_augmentations(events, training=True, aug_prob=0.5, width=346, height=260):
     """
     Apply various augmentations to event data to improve robustness.
@@ -151,60 +152,31 @@ def eventstovoxel(events, height=260, width=346, bins=5, training=True, hotpixel
     device = events.device
     
     # Handle both 3D and 4D input tensors
-    if events.dim() == 4:  # [B, T, N, 4]
-        B, T, N, _ = events.shape
-        # Reshape to [B*T, N, 4] for processing
-        events_reshaped = events.view(B * T, N, 4)
-        
-        # Apply augmentations during training
-        if hotpixel:
-            events_reshaped = add_hot_pixels(events_reshaped, device, width, height)
-        if training:
-            events_reshaped = apply_event_augmentations(events_reshaped, training=training, aug_prob=aug_prob, width=width, height=height)
-            _, N, _ = events_reshaped.shape  # Update N after augmentations
-        
-        # Convert normalized coordinates to pixel indices
-        x = (events_reshaped[:, :, 1]).long().clamp(0, width - 1)
-        y = (events_reshaped[:, :, 2]).long().clamp(0, height - 1)
-        t = (events_reshaped[:, :, 0] * bins).long().clamp(0, bins - 1)
-        p = events_reshaped[:, :, 3].long()
-        neg_p = (p < 0).long()
-        pos_p = (p > 0).long()
-        
-        voxel = torch.zeros(B * T, 2 * bins, height, width, device=device)
-        batch_idx = torch.arange(B * T, device=device).unsqueeze(1).expand(-1, N)
-
-        voxel.index_put_((batch_idx, t, y, x), pos_p * torch.ones_like(t, dtype=torch.float), accumulate=True)
-        voxel.index_put_((batch_idx, t + bins, y, x), neg_p * torch.ones_like(t, dtype=torch.float), accumulate=True)
-        
-        # Reshape back to [B, T, 2*bins, H, W]
-        return voxel.view(B, T, 2 * bins, height, width)
+    B, N, _ = events.shape
     
-    else:  # [B, N, 4] - original behavior
-        B, N, _ = events.shape
-        
-        # Apply augmentations during training
-        if hotpixel:
-            events = add_hot_pixels(events, device, width, height)
-        if training:
-            events = apply_event_augmentations(events, training=training, aug_prob=aug_prob, width=width, height=height)
-            B, N, _ = events.shape  # Update shape after augmentations
-        
-        # Convert normalized coordinates to pixel indices
-        x = (events[:, :, 1]).long().clamp(0, width - 1)
-        y = (events[:, :, 2]).long().clamp(0, height - 1)
-        t = (events[:, :, 0] * bins).long().clamp(0, bins - 1)
-        p = events[:, :, 3].long()
-        neg_p = (p < 0).long()
-        pos_p = (p > 0).long()
-        
-        voxel = torch.zeros(B, 2 * bins, height, width, device=device)
-        batch_idx = torch.arange(B, device=device).unsqueeze(1).expand(-1, N)
+    # Apply augmentations during training
+    if hotpixel:
+        events = add_hot_pixels(events, device, width, height)
+    if training:
+        events = apply_event_augmentations(events, training=training, aug_prob=aug_prob, width=width, height=height)
+        B, N, _ = events.shape  # Update shape after augmentations
+    
+    # Convert normalized coordinates to pixel indices
+    x = (events[:, :, 1]).long().clamp(0, width - 1)
+    y = (events[:, :, 2]).long().clamp(0, height - 1)
+    t = (events[:, :, 0] * bins).long().clamp(0, bins - 1)
+    p = events[:, :, 3].long()
+    neg_p = (p < 0).long()
+    pos_p = (p > 0).long()
+    
+    voxel = torch.zeros(B, 2 * bins, height, width, device=device)
+    batch_idx = torch.arange(B, device=device).unsqueeze(1).expand(-1, N)
 
-        voxel.index_put_((batch_idx, t, y, x), pos_p * torch.ones_like(t, dtype=torch.float), accumulate=True)
-        voxel.index_put_((batch_idx, t + bins, y, x), neg_p * torch.ones_like(t, dtype=torch.float), accumulate=True)
-        
-        return voxel
+    voxel.index_put_((batch_idx, t, y, x), pos_p * torch.ones_like(t, dtype=torch.float), accumulate=True)
+    voxel.index_put_((batch_idx, t + bins, y, x), neg_p * torch.ones_like(t, dtype=torch.float), accumulate=True)
+    
+    return voxel
+
 def eventstohistogram(events, height=260, width=346):
     """
     Convert events to histogram representation.

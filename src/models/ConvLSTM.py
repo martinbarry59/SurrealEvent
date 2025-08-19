@@ -5,23 +5,20 @@ import torch.nn.functional as F
 from  .EventSurrealLayers import Encoder, Decoder, ConvLSTM
 from utils.functions import eventstovoxel, normalize_event_times_vectorized
 class EConvlstm(nn.Module):
-    def __init__(self, input_channels = 2, model_type = "CONVLSTM", width=346, height=260, skip_lstm=True):
+    def __init__(self,model_type = "CONVLSTM", width=346, height=260, skip_lstm=True):
 
         super().__init__()
-        self.bins = 5
         self.width = width
         self.height = height
         self.model_type = model_type
         self.skip_lstm = skip_lstm 
         self.method = "add"
         # Embed each event (t, x, y, p)
-        self.encoder = Encoder(2 * self.bins)
+        self.encoder = Encoder(5)
         self.encoder_channels = [32, 24, 32, 64, 1280]
         
         self.mheight = 9
         self.mwidth = 11
-        self.voxel_bn = torch.nn.GroupNorm(num_groups=1, num_channels=2 * self.bins)
-
 
         if "LSTM" in self.model_type:
             if self.skip_lstm:
@@ -88,7 +85,30 @@ class EConvlstm(nn.Module):
         else:
             self.estimated_depth = self.estimated_depth.detach()
    
-   
+    def print_statistics(self, hist_events, events):
+        """ Print complete set of different statistics for debugging """
+        print("Histogram Events:")
+        for i, hist in enumerate(hist_events):
+            print(f"  Frame {i}: {hist.shape}")
+        print("Original Events:")
+        print(f"  Shape: {events.shape}")
+        print(f"  Min t: {events[:, :, 0].min().item()}, Max t: {events[:, :, 0].max().item()}, Mean t: {events[:, :, 0].mean().item()}, Std t: {events[:, :, 0].std().item()}")
+        print(f"  Min x: {events[:, :, 1].min().item()}, Max x: {events[:, :, 1].max().item()}, Mean x: {events[:, :, 1].mean().item()}, Std x: {events[:, :, 1].std().item()}")
+        print(f"  Min y: {events[:, :, 2].min().item()}, Max y: {events[:, :, 2].max().item()}, Mean y: {events[:, :, 2].mean().item()}, Std y: {events[:, :, 2].std().item()}")
+        print(f"  Min p: {events[:, :, 3].min().item()}, Max p: {events[:, :, 3].max().item()}, Mean p: {events[:, :, 3].mean().item()}, Std p: {events[:, :, 3].std().item()}")
+        for hist in hist_events:
+            print(f"  Histogram shape: {hist.shape}, Min: {hist.min().item()}, Max: {hist.max().item()}")
+            print(f"  Histogram mean: {hist.mean().item()}, std: {hist.std().item()}")
+
+    def robust_normalize(self, x, percentile=95):
+        """Camera-agnostic robust normalization"""
+        B = x.size(0)
+        x_flat = x.view(B, -1)
+        
+        x_min = torch.quantile(x_flat, 0.05, dim=1, keepdim=True).view(B, 1, 1, 1)
+        x_max = torch.quantile(x_flat, percentile/100, dim=1, keepdim=True).view(B, 1, 1, 1)
+
+        return 2 * torch.clamp((x - x_min) / (x_max - x_min + 1e-8), 0, 1) - 1
     def forward(self, event_sequence, training=False, hotpixel=False):
         # events: [B, N, 4], mask: [B, N] (True = valid, False = padding)
         
@@ -121,6 +141,7 @@ class EConvlstm(nn.Module):
         interpolated = F.interpolate(CNN_encoder, size=(self.mheight, self.mwidth), mode='bilinear', align_corners=False)
         interpolated = interpolated.view(B, T, *interpolated.shape[1:])  # Reshape back to [B, T, C, H, W]
         
+
         skip_outputs = []
         if self.skip_lstm:
             for i, skip_lstm in enumerate(self.skip_convlstms):
@@ -133,10 +154,9 @@ class EConvlstm(nn.Module):
         outputs = []
         
         
-        x = self.decoder(flatten_encodings, [f.view(B*T, *f.shape[2:]) for f in skip_outputs])
-        
-        outputs = self.final_conv(x)  # [T*B, C, H, W]
-        outputs = outputs.view(B,T,H,W)
-        del hist_events, CNN_encoder, feats, x, flatten_encodings
 
-        return outputs, encodings.detach(), event_sequence
+        outputs.append(self.final_conv(x))
+        outputs = torch.cat(outputs, dim=1)
+        print(f"Final outputs shape: {outputs.shape}, min: {outputs.min().item()}, max: {outputs.max().item()}, mean: {outputs.mean().item()}, std: {outputs.std().item()}")
+        exit()
+        return outputs, encodings.detach(), seq_events
