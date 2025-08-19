@@ -1,24 +1,26 @@
-from asyncio import events
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from  .EventSurrealLayers import Encoder, Decoder, ConvLSTM
-from utils.functions import eventstovoxel, normalize_event_times_vectorized
+from utils.functions import eventstovoxel
 class EConvlstm(nn.Module):
-    def __init__(self,model_type = "CONVLSTM", width=346, height=260, skip_lstm=True):
+    def __init__(self, input_channels = 2, model_type = "CONVLSTM", width=346, height=260, skip_lstm=True):
 
         super().__init__()
+        self.bins = 5
         self.width = width
         self.height = height
         self.model_type = model_type
         self.skip_lstm = skip_lstm 
         self.method = "add"
         # Embed each event (t, x, y, p)
-        self.encoder = Encoder(5)
+        self.encoder = Encoder(2 * self.bins)
         self.encoder_channels = [32, 24, 32, 64, 1280]
         
         self.mheight = 9
         self.mwidth = 11
+        self.voxel_bn = torch.nn.GroupNorm(num_groups=1, num_channels=2 * self.bins)
+
 
         if "LSTM" in self.model_type:
             if self.skip_lstm:
@@ -85,78 +87,63 @@ class EConvlstm(nn.Module):
         else:
             self.estimated_depth = self.estimated_depth.detach()
    
-    def print_statistics(self, hist_events, events):
-        """ Print complete set of different statistics for debugging """
-        print("Histogram Events:")
-        for i, hist in enumerate(hist_events):
-            print(f"  Frame {i}: {hist.shape}")
-        print("Original Events:")
-        print(f"  Shape: {events.shape}")
-        print(f"  Min t: {events[:, :, 0].min().item()}, Max t: {events[:, :, 0].max().item()}, Mean t: {events[:, :, 0].mean().item()}, Std t: {events[:, :, 0].std().item()}")
-        print(f"  Min x: {events[:, :, 1].min().item()}, Max x: {events[:, :, 1].max().item()}, Mean x: {events[:, :, 1].mean().item()}, Std x: {events[:, :, 1].std().item()}")
-        print(f"  Min y: {events[:, :, 2].min().item()}, Max y: {events[:, :, 2].max().item()}, Mean y: {events[:, :, 2].mean().item()}, Std y: {events[:, :, 2].std().item()}")
-        print(f"  Min p: {events[:, :, 3].min().item()}, Max p: {events[:, :, 3].max().item()}, Mean p: {events[:, :, 3].mean().item()}, Std p: {events[:, :, 3].std().item()}")
-        for hist in hist_events:
-            print(f"  Histogram shape: {hist.shape}, Min: {hist.min().item()}, Max: {hist.max().item()}")
-            print(f"  Histogram mean: {hist.mean().item()}, std: {hist.std().item()}")
-
-    def robust_normalize(self, x, percentile=95):
-        """Camera-agnostic robust normalization"""
-        B = x.size(0)
-        x_flat = x.view(B, -1)
-        
-        x_min = torch.quantile(x_flat, 0.05, dim=1, keepdim=True).view(B, 1, 1, 1)
-        x_max = torch.quantile(x_flat, percentile/100, dim=1, keepdim=True).view(B, 1, 1, 1)
-
-        return 2 * torch.clamp((x - x_min) / (x_max - x_min + 1e-8), 0, 1) - 1
+   
     def forward(self, event_sequence, training=False, hotpixel=False):
         # events: [B, N, 4], mask: [B, N] (True = valid, False = padding)
         
-        # Vectorized time normalization across all timesteps
-        with torch.no_grad():
-            events = torch.stack(event_sequence, dim=1)  # [B, T, N, 4]
-            B, T, N, _ = events.shape
-            if events.shape[-1] == 4:
-                # Vectorized time normalization
-                events = normalize_event_times_vectorized(events)
-                
-                # Clamp spatial coordinates
-                events[:, :, :, 1] = events[:, :, :, 1].clamp(0, self.width-1)
-                events[:, :, :, 2] = events[:, :, :, 2].clamp(0, self.height-1)
-                
-                # Vectorized voxel conversion: [B, T, N, 4] -> [B, T, C, H, W]
-                hist_events = eventstovoxel(events, self.height, self.width, bins=self.bins, training=training, hotpixel=hotpixel).float()
-            else:
-                # If events are already processed, just use them
-                hist_events = events
-        events = hist_events  # [B, T, C, H, W]
-        B, T, C, H, W = events.shape
-        
-        batch_flatten = events.view(B*T, C, H, W)  # Flatten batch and time
-        hist_events = self.voxel_bn(batch_flatten)
-        
-        CNN_encoder, feats = self.encoder(hist_events)
-               
-    # Concatenate the outputs from the transformer and CNN
-        interpolated = F.interpolate(CNN_encoder, size=(self.mheight, self.mwidth), mode='bilinear', align_corners=False)
-        interpolated = interpolated.view(B, T, *interpolated.shape[1:])  # Reshape back to [B, T, C, H, W]
-        
+        lstm_inputs = []
+        timed_features = [[] for _ in range(len(self.encoder_channels))]  # For skip connections
+        seq_events = []
+        for events in event_sequence:
+            # normalise t per batch
+            with torch.no_grad():
+                if events.shape[-1] == 4:
+                    
+                    min_t = torch.min(events[:, :, 0], dim=1, keepdim=True)[0]
+                    max_t = torch.max(events[:, :, 0], dim=1, keepdim=True)[0]
+                    denom = (max_t - min_t)
+                    # Avoid division by zero, but only where denom is zero
+                    # print(f"Target time range: [{events[:, :, 0].min():.3f}, {events[:, :, 0].max():.3f}]")
+                    # print(f"Target x range: [{events[:, :, 1].min():.3f}, {events[:, :, 1].max():.3f}]")
+                    # print(f"Target y range: [{events[:, :, 2].min():.3f}, {events[:, :, 2].max():.3f}]")
+                    # print(f"Target polarity range: [{events[:, :, 3].min():.3f}, {events[:, :, 3].max():.3f}]")
+                    denom[denom < 1e-8] = 1.0  # If all times are the same, set denom to 1 to avoid NaN
+                    events[:, :, 0] = (events[:, :, 0] - min_t) / denom
+                    events[:,:, 1] = events[:, :, 1].clamp(0, self.width-1)
+                    events[:,:, 2] = events[:, :, 2].clamp(0, self.height-1)
+                    hist_events = eventstovoxel(events, self.height, self.width, training = training, hotpixel=hotpixel).float()
+                    seq_events.append(hist_events)
+                else:
+                    hist_events = events
+            hist_events = self.voxel_bn(hist_events)
+            CNN_encoder, feats = self.encoder(hist_events)
 
+            for i, f in enumerate(feats):
+                timed_features[i].append(f)
+        # Concatenate the outputs from the transformer and CNN
+            interpolated = F.interpolate(CNN_encoder, size=(self.mheight, self.mwidth), mode='bilinear', align_corners=False)
+            lstm_inputs.append(interpolated)
+        
+        lstm_inputs = torch.stack(lstm_inputs, dim=1)
         skip_outputs = []
         if self.skip_lstm:
             for i, skip_lstm in enumerate(self.skip_convlstms):
                 # Stack features for this skip level: [B, T, C, H, W]
-                skip_out = skip_lstm(feats[i].view(B, T, *feats[i].shape[1:]))  # Output: [B, T, C, H, W]
+                skip_feats = torch.stack(timed_features[i], dim=1)
+                skip_out = skip_lstm(skip_feats)  # Output: [B, T, C, H, W]
                 skip_outputs.append(skip_out.clone())
-        encodings = self.convlstm(interpolated)
-        flatten_encodings = encodings.view(B*T, *encodings.shape[2:])  # [B, T, C, H, W]
+        encodings = self.convlstm(lstm_inputs)
         # Decode to full self.resolution depth map
         outputs = []
         
+        for t in range(encodings.shape[1]):
+            if self.skip_lstm:
+                skip_feats_t = [skip_outputs[i][:, t] for i in range(len(skip_outputs))]
+            else:
+                skip_feats_t = [timed_features[i][t] for i in range(len(timed_features))]
+            x = self.decoder(encodings[:, t], skip_feats_t)
         
-
-        outputs.append(self.final_conv(x))
+            outputs.append(self.final_conv(x))
         outputs = torch.cat(outputs, dim=1)
-        print(f"Final outputs shape: {outputs.shape}, min: {outputs.min().item()}, max: {outputs.max().item()}, mean: {outputs.mean().item()}, std: {outputs.std().item()}")
-        exit()
+
         return outputs, encodings.detach(), seq_events
