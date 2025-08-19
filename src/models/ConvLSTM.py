@@ -87,7 +87,29 @@ class EConvlstm(nn.Module):
         else:
             self.estimated_depth = self.estimated_depth.detach()
    
-   
+    def print_statistics(self, hist_events, events):
+        """ Print complete set of different statistics for debugging """
+        print("Histogram Events:")
+        for i, hist in enumerate(hist_events):
+            print(f"  Frame {i}: {hist.shape}")
+        print("Original Events:")
+        print(f"  Shape: {events.shape}")
+        print(f"  Min t: {events[:, :, 0].min().item()}, Max t: {events[:, :, 0].max().item()}, Mean t: {events[:, :, 0].mean().item()}, Std t: {events[:, :, 0].std().item()}")
+        print(f"  Min x: {events[:, :, 1].min().item()}, Max x: {events[:, :, 1].max().item()}, Mean x: {events[:, :, 1].mean().item()}, Std x: {events[:, :, 1].std().item()}")
+        print(f"  Min y: {events[:, :, 2].min().item()}, Max y: {events[:, :, 2].max().item()}, Mean y: {events[:, :, 2].mean().item()}, Std y: {events[:, :, 2].std().item()}")
+        print(f"  Min p: {events[:, :, 3].min().item()}, Max p: {events[:, :, 3].max().item()}, Mean p: {events[:, :, 3].mean().item()}, Std p: {events[:, :, 3].std().item()}")
+        for hist in hist_events[0]:
+            print(f"  Histogram shape: {hist.shape}, Min: {hist.min().item()}, Max: {hist.max().item()}")
+            print(f"  Histogram mean: {hist.mean().item()}, std: {hist.std().item()}")
+    @staticmethod
+    def robust_minmax(x, low_q=0.05, high_q=0.95, eps=1e-6):
+        # x: [B, C, H, W] -> per-sample robust [0,1]
+        B = x.size(0)
+        xf = x.view(B, -1)
+        lo = torch.quantile(xf, low_q, dim=1, keepdim=True).view(B, 1, 1, 1)
+        hi = torch.quantile(xf, high_q, dim=1, keepdim=True).view(B, 1, 1, 1)
+        x = (x - lo) / (hi - lo + eps)
+        return x.clamp_(0.0, 1.0)
     def forward(self, event_sequence, training=False, hotpixel=False):
         # events: [B, N, 4], mask: [B, N] (True = valid, False = padding)
         
@@ -115,9 +137,12 @@ class EConvlstm(nn.Module):
                     seq_events.append(hist_events)
                 else:
                     hist_events = events
-            hist_events = self.voxel_bn(hist_events)
+            hist_events = self.robust_minmax(hist_events)
+            self.print_statistics(hist_events, events)
+            # exitf.print_statistics(hist_events, events)
+            # exit()
             CNN_encoder, feats = self.encoder(hist_events)
-
+            # print(f"CNN encoder statistics min: {CNN_encoder.min().item()}, max: {CNN_encoder.max().item()}, mean: {CNN_encoder.mean().item()}")
             for i, f in enumerate(feats):
                 timed_features[i].append(f)
         # Concatenate the outputs from the transformer and CNN

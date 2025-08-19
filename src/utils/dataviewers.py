@@ -100,10 +100,13 @@ class dataviewerdavis(dataviewer): ## Davis
         self.width, self.height = self.camera.getEventResolution()
 
         self.slicer = dv.EventStreamSlicer()
-        self.filter = dv.noise.BackgroundActivityNoiseFilter((self.width, self.height), 
-                                                        backgroundActivityDuration=timedelta(milliseconds=100))
-        
-        self.slicer.doEveryTimeInterval(timedelta(milliseconds=60),self.retrieveEvents)
+        self.filter = dv.noise.BackgroundActivityNoiseFilter(
+            (self.width, self.height),
+            backgroundActivityDuration=timedelta(milliseconds=10)
+        )
+
+        # Align slice duration with the Prophesee pipeline (or tune to hit ~max_events)
+        self.slicer.doEveryTimeInterval(timedelta(milliseconds=100), self.retrieveEvents)
     
     def run(self):
 
@@ -119,7 +122,7 @@ class dataviewerdavis(dataviewer): ## Davis
             if self.instant_events is None or len(self.instant_events) == 0:
                 continue
             self.filter.accept(self.instant_events)
-            filtered_events = self.instant_events#self.filter.generateEvents()
+            filtered_events = self.filter.generateEvents()
             self.processEvents(filtered_events, reversex=True)
            
             

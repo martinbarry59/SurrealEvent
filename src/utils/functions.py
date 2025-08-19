@@ -383,8 +383,10 @@ def eventstovoxel(events, height=260, width=346, bins=5, training=True, hotpixel
 
     # Apply augmentations during training
     if hotpixel:
+        print("Adding hot pixels")
         events = add_hot_pixels(events, device, width, height)
     if training:
+        print("Applying event augmentations")
         events = apply_event_augmentations(events, training=training, aug_prob=aug_prob, width=width, height=height)
         B, N, _ = events.shape  # Update shape after augmentations
     # Add hot pixels (realistic camera noise)
@@ -400,6 +402,7 @@ def eventstovoxel(events, height=260, width=346, bins=5, training=True, hotpixel
     p = events[:, :, 3].long()
     neg_p = (p < 0).long()  # Convert polarity to 0/1 for voxel channel indexing
     pos_p = (p > 0).long()  # Convert polarity to 0/1 for voxel channel indexing
+    
     # Final channel index: [B, N]
     c = t
     voxel = torch.zeros(B, 2 * bins, height, width, device=device)

@@ -41,7 +41,7 @@ def main():
     viewer = dataviewer(camera)
     
     if checkpoint_path:
-        checkpoint_file = f'{checkpoint_path}/model_epoch_4_CONVLSTM.pth'
+        checkpoint_file = f'{checkpoint_path}/model_epoch_1_CONVLSTM.pth'
         # checkpoint_file = f'{checkpoint_path}/model_epoch_8_CONVLSTM_best_SKIP_NOLSTM.pth'
         if "NOLSTM" in checkpoint_file:
             model = EConvlstm(model_type=network, skip_lstm=False)
