@@ -91,38 +91,81 @@ class dataviewer:
         self.showImage(merged_img)
     def run(self):
         raise NotImplementedError("This method should be implemented in subclasses")
+def _refractory_filter_numpy(ev_np, ref_us, height, width):
+    # ev_np fields typically: ['timestamp','x','y','polarity']
+    t_key = 'timestamp' if 'timestamp' in ev_np.dtype.names else 't'
+    last_t = np.full((height, width), -1e18, dtype=np.float64)
+    keep = np.zeros(ev_np.shape[0], dtype=bool)
+
+    t = ev_np[t_key].astype(np.float64)
+    x = ev_np['x'].astype(np.int32)
+    y = ev_np['y'].astype(np.int32)
+    for i in range(ev_np.shape[0]):
+        ti, xi, yi = t[i], x[i], y[i]
+        if ti - last_t[yi, xi] >= ref_us:
+            keep[i] = True
+            last_t[yi, xi] = ti
+    return ev_np[keep]
 class dataviewerdavis(dataviewer): ## Davis
     def __init__(self, camera):
         print("Using dv_processing for event processing")
         super().__init__(camera)
-        
 
         self.width, self.height = self.camera.getEventResolution()
+        self.max_events = 50000  # set to the training target (e.g., 1000/2000)
 
         self.slicer = dv.EventStreamSlicer()
+        # Prefer slicing by count to stabilize input distribution
+        # try:
+            # if available in your dv version
+            # self.slicer.doEveryNumberOfEvents(self.max_events, self.retrieveEvents)
+            # self.slice_by_count = True
+        # except Exception:
+            # fallback to time slices (make them short)
+        from datetime import timedelta
+        self.slicer.doEveryTimeInterval(timedelta(milliseconds=100), self.retrieveEvents)
+        self.slice_by_count = False
+
+        # Keep BA filter but it won’t remove hot pixels/overactive rows by itself
+        from datetime import timedelta
         self.filter = dv.noise.BackgroundActivityNoiseFilter(
             (self.width, self.height),
             backgroundActivityDuration=timedelta(milliseconds=10)
         )
 
-        # Align slice duration with the Prophesee pipeline (or tune to hit ~max_events)
-        self.slicer.doEveryTimeInterval(timedelta(milliseconds=100), self.retrieveEvents)
-    
     def run(self):
-
         while self.camera.isRunning():
             self.instant_events = None
-
-    # Read batch of events
             events = self.camera.getNextEventBatch()
-            if events is None or len(events)== 0:
+            if events is None or len(events) == 0:
                 continue
 
             self.slicer.accept(events)
             if self.instant_events is None or len(self.instant_events) == 0:
                 continue
-            self.filter.accept(self.instant_events)
+
+            ev = self.instant_events
+            try:
+                ev_np = ev.numpy()
+                # cap by count
+                if ev_np.shape[0] > self.max_events * 4:  # cap early to keep runtime OK
+                    ev_np = ev_np[-self.max_events * 4:]
+
+                # refractory 1000 us (1 ms) — tune for your scene
+                ev_np = _refractory_filter_numpy(ev_np, ref_us=1000, height=self.height, width=self.width)
+
+                # final cap to training target
+                if ev_np.shape[0] > self.max_events:
+                    ev_np = ev_np[-self.max_events:]
+
+                ev = dv.EventStore.fromNumpy(ev_np)
+            except Exception:
+                pass
+
+            self.filter.accept(ev)
             filtered_events = self.filter.generateEvents()
+            if filtered_events is None or len(filtered_events) == 0:
+                continue
             self.processEvents(filtered_events, reversex=True)
            
             

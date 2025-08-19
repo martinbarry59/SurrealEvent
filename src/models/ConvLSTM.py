@@ -138,7 +138,7 @@ class EConvlstm(nn.Module):
                 else:
                     hist_events = events
             hist_events = self.robust_minmax(hist_events)
-            self.print_statistics(hist_events, events)
+            # self.print_statistics(hist_events, events)
             # exitf.print_statistics(hist_events, events)
             # exit()
             CNN_encoder, feats = self.encoder(hist_events)
