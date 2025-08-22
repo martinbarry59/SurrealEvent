@@ -117,13 +117,13 @@ def compute_mixed_loss(predictions, depths, criterion, epoch):
         loss += criterion(pred_lpips, enc_lpips).mean()
         # if epoch > 0:
         loss += min(1, epoch) * compute_edge_loss(pred[:,0:1], enc[:,0:1])
-        # if t > 0:
-        #     mse = torch.nn.MSELoss()(depths[:,t], depths[:,t-1])
-        #     loss_est = torch.exp(torch.clamp(-50 * mse, min=-10, max=10))
-        #     loss_t = F.l1_loss(predictions[:,t], predictions[:,t-1])
-        #     TC_loss = loss_t * loss_est
+        if t > 0:
+            mse = torch.nn.MSELoss()(depths[:,t], depths[:,t-1])
+            loss_est = torch.exp(torch.clamp(-50 * mse, min=-10, max=10))
+            loss_t = F.l1_loss(predictions[:,t], predictions[:,t-1])
+            TC_loss = loss_t * loss_est
             
-        #     loss += 5 * min(1, max(0, (epoch-5)/3) * TC_loss)
+            loss += 1 * min(1, max(0, (epoch-5)/3) * TC_loss)
     return loss / predictions.shape[1]
 
 

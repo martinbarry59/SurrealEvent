@@ -383,10 +383,8 @@ def eventstovoxel(events, height=260, width=346, bins=5, training=True, hotpixel
 
     # Apply augmentations during training
     if hotpixel:
-        print("Adding hot pixels")
         events = add_hot_pixels(events, device, width, height)
     if training:
-        print("Applying event augmentations")
         events = apply_event_augmentations(events, training=training, aug_prob=aug_prob, width=width, height=height)
         B, N, _ = events.shape  # Update shape after augmentations
     # Add hot pixels (realistic camera noise)
