@@ -95,6 +95,7 @@ def forward_feed(model, data, device, train, step_size=1, start_seq=0, block_upd
         seq_labels = np.array(seq_labels)
 
     predictions, encodings, seq_events = model(seq_events, seq_masks, training=train, hotpixel=hotpixel)
+
     with torch.no_grad():
         if video_writer:
             # for t in range(predictions.shape[1]):
@@ -117,7 +118,9 @@ def compute_mixed_loss(predictions, depths, criterion, epoch):
     for t in range(predictions.shape[1]):
         pred = predictions[:,t]
         enc = depths[:,t]
-        loss += criterion(pred, enc).mean()
+        pred_lpips = pred * 2 - 1
+        enc_lpips = enc * 2 - 1
+        loss += criterion(pred_lpips, enc_lpips).mean()
         # if epoch > 0:
         loss += min(1, epoch) * compute_edge_loss(pred[:,0:1], enc[:,0:1])
         if t > 0:
@@ -126,7 +129,7 @@ def compute_mixed_loss(predictions, depths, criterion, epoch):
             loss_t = F.l1_loss(predictions[:,t], predictions[:,t-1])
             TC_loss = loss_t * loss_est
             
-            loss += 5 * min(1, max(0, (epoch-5)/3) * TC_loss)
+            loss += 1 * min(1, max(0, (epoch-5)/3) * TC_loss)
     return loss / predictions.shape[1]
 
 
@@ -176,25 +179,13 @@ def sequence_for_LSTM(data, model, criterion, optimizer, device,
                                                               start_seq=start_seq, block_update=block_update, 
                                                               video_writer=video_writer, zeroing=zeroing, hotpixel=hotpixel, noise_gen=noise_gen)
 
-        # if n == 0 and len(labels) > 0:
-        #     with torch.no_grad():
-        #         labels = np.permute_dims(labels, (1, 0))
-        #         ## flatten labels
-        #         labels = labels.reshape(-1)
-        #         video_labels = labels.copy()
-        #         video_labels = np.array([ l.split("_t_")[0] for l in video_labels])
-        #         ## repeat to all other dimensions
-        #         ## flatten encodings
-        #         flattened_encodings = encodings.reshape(-1, encodings.shape[-1])
-        #         # print(encodings.shape, predictions.shape, flattened_encodings.shape, labels.shape, unique_labels.shape)
-        #         tsne = TSNE(n_components=2, verbose=0, perplexity=50, max_iter=2000).fit_transform(
-        #             flattened_encodings.cpu().numpy()
-        #         )
-        #         plotly_TSNE(tsne, labels, video_labels, f"{model.model_type}")
         
         
         ## compute SSIM loss
         loss = compute_mixed_loss(predictions, 1* (depths >0), criterion, epoch)
+
+        predictions = predictions.detach()
+        depths = depths.detach()
         # if not train:
         if train:
             scaler.scale(loss).backward()
@@ -206,7 +197,7 @@ def sequence_for_LSTM(data, model, criterion, optimizer, device,
             # exit()
         model.detach_states()
         loss_avg.append(loss.item())
-        del loss, encodings
+        del loss
         with torch.no_grad():
             predictions = predictions.view(-1, 1, predictions.shape[-2], predictions.shape[-1]).detach()
             depths = depths.view(-1, 1, depths.shape[-2], depths.shape[-1]).detach()

@@ -4,20 +4,23 @@ import torch.nn.functional as F
 from  .EventSurrealLayers import Encoder, Decoder, ConvLSTM
 from utils.functions import eventstovoxel
 class EConvlstm(nn.Module):
-    def __init__(self,model_type = "CONVLSTM", width=346, height=260, skip_lstm=True):
+    def __init__(self, input_channels = 2, model_type = "CONVLSTM", width=346, height=260, skip_lstm=True):
 
         super().__init__()
+        self.bins = 5
         self.width = width
         self.height = height
         self.model_type = model_type
         self.skip_lstm = skip_lstm 
         self.method = "add"
         # Embed each event (t, x, y, p)
-        self.encoder = Encoder(5)
+        self.encoder = Encoder(2 * self.bins)
         self.encoder_channels = [32, 24, 32, 64, 1280]
         
         self.mheight = 9
         self.mwidth = 11
+        self.voxel_bn = torch.nn.GroupNorm(num_groups=1, num_channels=2 * self.bins)
+
 
         if "LSTM" in self.model_type:
             if self.skip_lstm:
@@ -95,11 +98,12 @@ class EConvlstm(nn.Module):
         print(f"  Min x: {events[:, :, 1].min().item()}, Max x: {events[:, :, 1].max().item()}, Mean x: {events[:, :, 1].mean().item()}, Std x: {events[:, :, 1].std().item()}")
         print(f"  Min y: {events[:, :, 2].min().item()}, Max y: {events[:, :, 2].max().item()}, Mean y: {events[:, :, 2].mean().item()}, Std y: {events[:, :, 2].std().item()}")
         print(f"  Min p: {events[:, :, 3].min().item()}, Max p: {events[:, :, 3].max().item()}, Mean p: {events[:, :, 3].mean().item()}, Std p: {events[:, :, 3].std().item()}")
-        for hist in hist_events:
+        for hist in hist_events[0]:
             print(f"  Histogram shape: {hist.shape}, Min: {hist.min().item()}, Max: {hist.max().item()}")
             print(f"  Histogram mean: {hist.mean().item()}, std: {hist.std().item()}")
 
-    def forward(self, event_sequence, mask_sequence = None, training=True, hotpixel=False):
+
+    def forward(self, event_sequence, training=False, hotpixel=False):
         # events: [B, N, 4], mask: [B, N] (True = valid, False = padding)
         
         lstm_inputs = []
@@ -122,19 +126,23 @@ class EConvlstm(nn.Module):
                     events[:, :, 0] = (events[:, :, 0] - min_t) / denom
                     events[:,:, 1] = events[:, :, 1].clamp(0, self.width-1)
                     events[:,:, 2] = events[:, :, 2].clamp(0, self.height-1)
-                    
-                    hist_events, events = eventstovoxel(events, self.height, self.width, training = training, hotpixel=hotpixel)
+
+                    hist_events = eventstovoxel(events, self.height, self.width, training = training, hotpixel=hotpixel).float()
                     seq_events.append(hist_events)
                 else:
                     hist_events = events
-
+            hist_events = self.robust_minmax(hist_events)
+            # self.print_statistics(hist_events, events)
+            # exitf.print_statistics(hist_events, events)
+            # exit()
             CNN_encoder, feats = self.encoder(hist_events)
+            # print(f"CNN encoder statistics min: {CNN_encoder.min().item()}, max: {CNN_encoder.max().item()}, mean: {CNN_encoder.mean().item()}")
             for i, f in enumerate(feats):
                 timed_features[i].append(f)
-            
         # Concatenate the outputs from the transformer and CNN
             interpolated = F.interpolate(CNN_encoder, size=(self.mheight, self.mwidth), mode='bilinear', align_corners=False)
             lstm_inputs.append(interpolated)
+        
         lstm_inputs = torch.stack(lstm_inputs, dim=1)
         skip_outputs = []
         if self.skip_lstm:

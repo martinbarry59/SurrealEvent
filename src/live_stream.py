@@ -7,10 +7,24 @@ import torch
 
 ## check if current pythin version is 3.12
 import sys
-if sys.version_info.major != 3 or sys.version_info.minor < 12:
-    from utils.dataviewers import dataviewer39 as dataviewer
-else:
-    from utils.dataviewers import dataviewer312 as dataviewer
+## get connected camera names
+try: 
+    sys.path.append("/usr/lib/python3/dist-packages")
+
+    from metavision_sdk_stream import Camera
+    camera = Camera.from_first_available()
+    from utils.dataviewers import dataviewerprophesee as dataviewer
+
+except Exception as e:
+    try:
+        import dv_processing as dv
+        camera = dv.io.camera.open()
+        from utils.dataviewers import dataviewerdavis as dataviewer
+    except Exception as e:
+        print("could not find any cameras" )
+    
+        exit()
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 def parse_args():
     import argparse
@@ -24,10 +38,10 @@ def parse_args():
 
 def main():
     network = "CONVLSTM"
-    viewer = dataviewer()
+    viewer = dataviewer(camera)
     
     if checkpoint_path:
-        checkpoint_file = f'{checkpoint_path}/model_epoch_12_CONVLSTM.pth'
+        checkpoint_file = f'{checkpoint_path}/model_epoch_1_CONVLSTM.pth'
         # checkpoint_file = f'{checkpoint_path}/model_epoch_8_CONVLSTM_best_SKIP_NOLSTM.pth'
         if "NOLSTM" in checkpoint_file:
             model = EConvlstm(model_type=network, skip_lstm=False)

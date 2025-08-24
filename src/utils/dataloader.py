@@ -81,13 +81,14 @@ class EventDepthDataset(Dataset):
         
         # voxels = torch.zeros((depth.shape[0], 5, 260, 346)).to(torch.uint8)
         step = 1/(30*12)
-        t_events = torch.zeros((depth.shape[0], 10000, 4), requires_grad=False)
+        N = 50000
+        t_events = torch.zeros((depth.shape[0], N, 4), requires_grad=False)
         for t in range(depth.shape[0]):
               # [1, 4]
             t_start = max((t - 4) * step, 0)
             nevents = events[ ( t_start <= events[:, 0]) * (events[:, 0] < (t + 1) * step)].unsqueeze(0)
-            if nevents.shape[1] > 10000:
-                nevents = nevents[:, :10000, :]
+            if nevents.shape[1] > N:
+                nevents = nevents[:, :N, :]
             t_events[t, :nevents.shape[1]] = nevents
         return t_events, depth
 
