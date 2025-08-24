@@ -11,6 +11,8 @@ from models.BOBVEG import BestOfBothWorld
 from config import data_path, results_path, checkpoint_path
 import os
 import shutil
+from utils.functions import PersistentNoiseGenerator
+
 from ignite.metrics import SSIM
 from ignite.engine import Engine
 def eval_step(engine, batch):
@@ -62,8 +64,8 @@ def process_output(mask):
 
 
 
-def forward_feed(model, data, device, step_size=1, start_seq=0, block_update=30, video_writer=None, zeroing=False):
-    
+def forward_feed(model, data, device, train, step_size=1, start_seq=0, block_update=30, video_writer=None, zeroing=False, hotpixel=False, noise_gen=None):
+
     seq_events = []
     seq_masks = []
     seq_depths = []
@@ -75,21 +77,24 @@ def forward_feed(model, data, device, step_size=1, start_seq=0, block_update=30,
         ## add white noise (-1 or 1 ) with 10% probability
         events, depth = events.to(device), depth.to(device)
         events = events if not zeroing else events * 0
-
+        t_min, t_max = events[:,:,0].min().item(), events[:,:,0].max().item()
+        noise_events = noise_gen.step(events.shape[0], t_min, t_max) 
+        if noise_events is not None and noise_events.shape[0] > 0:
+            events = torch.cat((events, noise_events), dim=1)
         labels = None
 
         if len(datat) == 4:
             labels = datat[3]
         seq_events.append(events.to(torch.float32))
-        seq_depths.append(depth / 255)
+        seq_depths.append(1* (depth >0).to(torch.float32))
         if labels is not None:
             seq_labels.append(labels)
     ## convert the seq_labels to numpy array
     seq_depths = torch.stack(seq_depths, dim=1)
     if len(seq_labels) > 0:
         seq_labels = np.array(seq_labels)
-    
-    predictions, encodings, seq_events = model(seq_events, seq_masks)
+
+    predictions, encodings, seq_events = model(seq_events, seq_masks, training=train, hotpixel=hotpixel)
     with torch.no_grad():
         if video_writer:
             # for t in range(predictions.shape[1]):
@@ -153,6 +158,10 @@ def sequence_for_LSTM(data, model, criterion, optimizer, device,
     # print(f"Starting training from {t_start} for {N_update} updates with block size {block_update} and step size {step_size}")
     optimizer.zero_grad()
     zero_run = True if 0.1 > random.random() else False
+    hotpixel = True if torch.rand(1).item() < 0.9 else False
+
+    noise_gen = PersistentNoiseGenerator(width=346, height=260, device=device, seed=None)
+    noise_gen.reset()  # per video
     for n in range(N_update):
         
         start_seq = t_start + n * block_update * step_size
@@ -163,9 +172,9 @@ def sequence_for_LSTM(data, model, criterion, optimizer, device,
             start_seq = t_start + 3 * block_update * step_size
         else:
             zeroing = False
-        predictions, encodings, labels, depths = forward_feed(model, data, device, step_size=step_size, 
+        predictions, encodings, labels, depths = forward_feed(model, data, device, train, step_size=step_size, 
                                                               start_seq=start_seq, block_update=block_update, 
-                                                              video_writer=video_writer, zeroing=zeroing)
+                                                              video_writer=video_writer, zeroing=zeroing, hotpixel=hotpixel, noise_gen=noise_gen)
 
         # if n == 0 and len(labels) > 0:
         #     with torch.no_grad():
@@ -185,7 +194,7 @@ def sequence_for_LSTM(data, model, criterion, optimizer, device,
         
         
         ## compute SSIM loss
-        loss = compute_mixed_loss(predictions, depths, criterion, epoch)
+        loss = compute_mixed_loss(predictions, 1* (depths >0), criterion, epoch)
         # if not train:
         if train:
             scaler.scale(loss).backward()
