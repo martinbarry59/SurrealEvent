@@ -60,7 +60,7 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
 
 def main():
     batch_train = 15
-    batch_test = 80
+    batch_test = 100
 
     network = "CONVLSTM" # LSTM, Transformer, BOBWFF, BOBWLSTM
     
@@ -118,9 +118,10 @@ def main():
         if epoch >= epoch_checkpoint:
             scaler = torch.amp.GradScaler(device=device)   
             if not test_only:
+                test_loss = evaluation(model, test_loader, optimizer, epoch, criterion= criterion, train=False, save_path=save_path , scaler=scaler)
+
                 train_loss = evaluation(model, train_loader, optimizer, epoch, criterion, train=True, save_path=save_path, scaler=scaler)
 
-                test_loss = evaluation(model, test_loader, optimizer, epoch, criterion= criterion, train=False, save_path=save_path , scaler=scaler)
 
 
                 save_string = f'{checkpoint_path}/model_epoch_{epoch}_{model.model_type}'

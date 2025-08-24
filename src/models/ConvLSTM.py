@@ -99,7 +99,7 @@ class EConvlstm(nn.Module):
             print(f"  Histogram shape: {hist.shape}, Min: {hist.min().item()}, Max: {hist.max().item()}")
             print(f"  Histogram mean: {hist.mean().item()}, std: {hist.std().item()}")
 
-    def forward(self, event_sequence, mask_sequence = None, training=True, hotpixel=False):
+    def forward(self, event_sequence, training=False, hotpixel=False):
         # events: [B, N, 4], mask: [B, N] (True = valid, False = padding)
         
         lstm_inputs = []
@@ -122,8 +122,8 @@ class EConvlstm(nn.Module):
                     events[:, :, 0] = (events[:, :, 0] - min_t) / denom
                     events[:,:, 1] = events[:, :, 1].clamp(0, self.width-1)
                     events[:,:, 2] = events[:, :, 2].clamp(0, self.height-1)
-                    
-                    hist_events = eventstovoxel(events, self.height, self.width, training = training, hotpixel=hotpixel).float()
+
+                    hist_events = eventstovoxel(events, self.height, self.width, training=training, hotpixel=hotpixel).float()
                     seq_events.append(hist_events)
                 else:
                     hist_events = events

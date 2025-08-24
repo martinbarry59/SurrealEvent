@@ -67,7 +67,6 @@ def process_output(mask):
 def forward_feed(model, data, device, train, step_size=1, start_seq=0, block_update=30, video_writer=None, zeroing=False, hotpixel=False, noise_gen=None):
 
     seq_events = []
-    seq_masks = []
     seq_depths = []
     seq_labels = []
     max_t = start_seq + block_update * step_size if block_update > 0 else len(data[0]) - 1
@@ -86,7 +85,7 @@ def forward_feed(model, data, device, train, step_size=1, start_seq=0, block_upd
         if len(datat) == 4:
             labels = datat[3]
         seq_events.append(events.to(torch.float32))
-        seq_depths.append(1* (depth >0).to(torch.float32))
+        seq_depths.append(depth / 255)
         if labels is not None:
             seq_labels.append(labels)
     ## convert the seq_labels to numpy array
@@ -94,7 +93,7 @@ def forward_feed(model, data, device, train, step_size=1, start_seq=0, block_upd
     if len(seq_labels) > 0:
         seq_labels = np.array(seq_labels)
 
-    predictions, encodings, seq_events = model(seq_events, seq_masks, training=train, hotpixel=hotpixel)
+    predictions, encodings, seq_events = model(seq_events, training=train, hotpixel=hotpixel)
 
     with torch.no_grad():
         if video_writer:
@@ -182,7 +181,7 @@ def sequence_for_LSTM(data, model, criterion, optimizer, device,
         
         
         ## compute SSIM loss
-        loss = compute_mixed_loss(predictions, 1* (depths >0), criterion, epoch)
+        loss = compute_mixed_loss(predictions, 1* (depths >0).float(), criterion, epoch)
 
         predictions = predictions.detach()
         depths = depths.detach()
