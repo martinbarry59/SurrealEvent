@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from  .EventSurrealLayers import Encoder, Decoder, ConvLSTM
+from torch.nn import LSTM
 from utils.functions import eventstovoxel
 class EConvlstm(nn.Module):
     def __init__(self,model_type = "CONVLSTM", width=346, height=260, skip_lstm=True):
@@ -18,6 +19,7 @@ class EConvlstm(nn.Module):
         
         self.mheight = 9
         self.mwidth = 11
+        self.bottleneck_channels = 128
 
         if "LSTM" in self.model_type:
             if self.skip_lstm:
@@ -29,19 +31,29 @@ class EConvlstm(nn.Module):
                     num_layers=1
                 ) for ch in self.encoder_channels[:-1]
             ])
-            self.convlstm = ConvLSTM(
-                input_dim=self.encoder_channels[4],
-                hidden_dims=[128, 128],
-                kernel_size=3,
-                num_layers=2
+            # if "denseLSTM" in self.model_type:
+            self.dense_lstm = LSTM(
+                input_size=self.encoder_channels[-1]*self.mheight*self.mwidth,
+                hidden_size=128,
+                num_layers=2,
+                batch_first=True
+
             )
+            self.fc_to_map = nn.Linear(128, self.bottleneck_channels * self.mheight * self.mwidth)
+            self.dense_state = None
+            # self.convlstm = ConvLSTM(
+            #     input_dim=self.encoder_channels[4],
+            #     hidden_dims=[128, 128],
+            #     kernel_size=3,
+            #     num_layers=2
+            # )
             self.encoder_channels = self.encoder_channels[:-1] + [128]
         else: 
             self.estimated_depth = None
 
 
         self.decoder = Decoder(self.encoder_channels, self.method)
-
+        
         self.final_conv = nn.Sequential(
             nn.Conv2d(self.encoder_channels[0], 32, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
@@ -68,8 +80,12 @@ class EConvlstm(nn.Module):
         if final_conv.bias is not None:
             nn.init.constant_(final_conv.bias, -2.0)  # Negative bias pushes sigmoid away from 0.5      
     def reset_states(self):
+        self.dense_state  = None
         if "LSTM" in self.model_type:
-            self.convlstm.reset_hidden()
+            # self.convlstm.reset_hidden()
+            if self.dense_state is not None:
+                h, c = self.dense_state
+                self.dense_state = (h.detach(), c.detach())
             if self.skip_lstm:
                 for skip_lstm in self.skip_convlstms:
                     skip_lstm.reset_hidden()
@@ -77,7 +93,10 @@ class EConvlstm(nn.Module):
             self.estimated_depth = None
     def detach_states(self):
         if "LSTM" in self.model_type:
-            self.convlstm.detach_hidden()
+            if self.dense_state is not None:
+                h, c = self.dense_state
+                self.dense_state = (h.detach(), c.detach())
+            # self.convlstm.detach_hidden()
             if self.skip_lstm:
                 for skip_lstm in self.skip_convlstms:
                     skip_lstm.detach_hidden()
@@ -143,18 +162,29 @@ class EConvlstm(nn.Module):
                 skip_feats = torch.stack(timed_features[i], dim=1)
                 skip_out = skip_lstm(skip_feats)  # Output: [B, T, C, H, W]
                 skip_outputs.append(skip_out.clone())
-        encodings = self.convlstm(lstm_inputs)
+        # encodings = self.convlstm(lstm_inputs)
+        # Dense LSTM at the lowest layer
+        B, T, Cb, Hb, Wb = lstm_inputs.shape
+        x_seq = lstm_inputs.flatten(2)  # [B, T, Cb*Hb*Wb]
+
+        if self.dense_state is None:
+            enc_seq, self.dense_state = self.dense_lstm(x_seq)                 # enc_seq: [B, T, 128]
+        else:
+            enc_seq, self.dense_state = self.dense_lstm(x_seq, self.dense_state)
+
+        # Project back to spatial bottleneck map
+        enc_flat = self.fc_to_map(enc_seq.reshape(B * T, -1))                  # [B*T, Cb_out*Hb*Wb]
+        enc_maps = enc_flat.view(B, T, self.bottleneck_channels, self.mheight, self.mwidth)
+
         # Decode to full self.resolution depth map
         outputs = []
-        
-        for t in range(encodings.shape[1]):
+        for t in range(T):
             if self.skip_lstm:
                 skip_feats_t = [skip_outputs[i][:, t] for i in range(len(skip_outputs))]
             else:
                 skip_feats_t = [timed_features[i][t] for i in range(len(timed_features))]
-            x = self.decoder(encodings[:, t], skip_feats_t)
-        
-            outputs.append(self.final_conv(x))
-        outputs = torch.cat(outputs, dim=1)
+            x = self.decoder(enc_maps[:, t], skip_feats_t)                      # [B, C_dec, H, W]
+            outputs.append(self.final_conv(x))                                  # [B, 1, H, W]
 
-        return outputs, encodings.detach(), seq_events
+        outputs = torch.cat(outputs, dim=1)  # [B, T, H, W]
+        return outputs, enc_maps.detach(), seq_events

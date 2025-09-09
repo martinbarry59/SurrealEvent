@@ -1,5 +1,4 @@
 
-from models.BOBW import BestOfBothWorld
 from models.ConvLSTM import EConvlstm
 from utils.dataloader import EventDepthDataset, Transformer_collate
 
@@ -33,7 +32,7 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
             writer_path = f'{save_path}/{tqdm_str}_EPOCH_{epoch}_video_{batch_step}.mp4' if save_path else None
             if save_path and not os.path.exists(writer_path):
                 os.makedirs(os.path.dirname(writer_path), exist_ok=True)
-            video_writer = cv2.VideoWriter(writer_path, fourcc, 30, (3*346,260)) if (not train or batch_step % 100==0 and save_path) else None
+            video_writer = cv2.VideoWriter(writer_path, fourcc, 30, (3*346,260)) if (not train or batch_step % 100 == 0 and save_path) else None
             # with torch.amp.autocast(device_type=device.type):
             loss_avg, loss_MSE, loss_SSIM, step_size, zero_run = sequence_for_LSTM(data, model, criterion, optimizer, device, train, epoch, scaler, video_writer=video_writer)
 
@@ -52,7 +51,10 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
                 model.reset_states()            
             batch_tqdm.update(1)
             batch_tqdm.set_postfix({"loss": batch_loss, "step_size": step_size, "zero_run": zero_run})
-           
+            save_string = f'{checkpoint_path}/model_epoch_{epoch}_{model.model_type}'
+
+            torch.save(model.state_dict(), f'{save_string}_tmp.pth') if video_writer else None
+            
         batch_tqdm.close()
     if len(loss_MSE) > 0:
         print(f"Epoch {epoch}, Loss: {sum(epoch_loss)/len(epoch_loss)}, MSE: {sum(loss_MSE)/len(loss_MSE)}, SSIM: {sum(loss_SSIM)/len(loss_SSIM)}")
@@ -60,7 +62,7 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
 
 def main():
     batch_train = 15
-    batch_test = 100
+    batch_test = 80
 
     network = "CONVLSTM" # LSTM, Transformer, BOBWFF, BOBWLSTM
     
@@ -86,13 +88,8 @@ def main():
             except Exception:
                 return -1
         checkpoint_file = max(checkpoint_files, key=extract_epoch)
-        if "BOBW" in network:
-            if "small" in checkpoint_file:
-                model = BestOfBothWorld(model_type=network, width=346, height = 260, embed_dim=128, depth=6, heads=8, num_queries=16)
-            else:
-                model = BestOfBothWorld(model_type=network, width= 346, height = 260, embed_dim=256, depth=12, heads=8, num_queries=64)
-        else:
-            model = EConvlstm(model_type=network, width=346, height=260)
+        
+        model = EConvlstm(model_type=network, width=346, height=260)
         print(f"Loading checkpoint from {checkpoint_file}")
         try:
             model.load_state_dict(torch.load(checkpoint_file, map_location=device))
@@ -110,7 +107,7 @@ def main():
     criterion.to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
 
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10, eta_min=1e-6)  # 10 = total number of epochs
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10, eta_min=1e-7)  # 10 = total number of epochs
     test_only = False
     save_path = save_path+ f"/{checkpoint_file.split('/')[-1].split('.')[0]}" if test_only else save_path
     min_loss = float('inf')
@@ -118,9 +115,10 @@ def main():
         if epoch >= epoch_checkpoint:
             scaler = torch.amp.GradScaler(device=device)   
             if not test_only:
+                train_loss = evaluation(model, train_loader, optimizer, epoch, criterion, train=True, save_path=save_path, scaler=scaler)
+
                 test_loss = evaluation(model, test_loader, optimizer, epoch, criterion= criterion, train=False, save_path=save_path , scaler=scaler)
 
-                train_loss = evaluation(model, train_loader, optimizer, epoch, criterion, train=True, save_path=save_path, scaler=scaler)
 
 
 

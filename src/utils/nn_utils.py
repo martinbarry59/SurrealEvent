@@ -1,17 +1,14 @@
 import random
 from utils.functions import add_frame_to_video
-from sklearn.manifold import TSNE
-from utils.plot_utils import plotly_TSNE
 from utils.dataloader import EventDepthDataset, CNN_collate, Transformer_collate, get_data
 import torch
 import numpy as np
 import torch.nn.functional as F
 from models.TransformerEventSurreal import EventTransformer
-from models.BOBVEG import BestOfBothWorld
 from config import data_path, results_path, checkpoint_path
 import os
 import shutil
-from utils.functions import PersistentNoiseGenerator
+from utils.functions import create_persistent_noise_generator_with_augmentations
 
 from ignite.metrics import SSIM
 from ignite.engine import Engine
@@ -122,13 +119,13 @@ def compute_mixed_loss(predictions, depths, criterion, epoch):
         loss += criterion(pred_lpips, enc_lpips).mean()
         # if epoch > 0:
         loss += min(1, epoch) * compute_edge_loss(pred[:,0:1], enc[:,0:1])
-        if t > 0:
-            mse = torch.nn.MSELoss()(depths[:,t], depths[:,t-1])
-            loss_est = torch.exp(torch.clamp(-50 * mse, min=-10, max=10))
-            loss_t = F.l1_loss(predictions[:,t], predictions[:,t-1])
-            TC_loss = loss_t * loss_est
+        # if t > 0:
+        #     mse = torch.nn.MSELoss()(depths[:,t], depths[:,t-1])
+        #     loss_est = torch.exp(torch.clamp(-50 * mse, min=-10, max=10))
+        #     loss_t = F.l1_loss(predictions[:,t], predictions[:,t-1])
+        #     TC_loss = loss_t * loss_est
             
-            loss += 1 * min(1, max(0, (epoch-5)/3) * TC_loss)
+        #     loss += 1 * min(1, max(0, (epoch)/3) * TC_loss)
     return loss / predictions.shape[1]
 
 
@@ -161,8 +158,8 @@ def sequence_for_LSTM(data, model, criterion, optimizer, device,
     optimizer.zero_grad()
     zero_run = True if 0.1 > random.random() else False
     hotpixel = True if torch.rand(1).item() < 0.9 else False
-
-    noise_gen = PersistentNoiseGenerator(width=346, height=260, device=device, seed=None)
+    config = random.choice([None, 'minimal', 'nighttime']) if train else 'minimal'
+    noise_gen = create_persistent_noise_generator_with_augmentations(width=346, height=260, device=device, config_type=config, training=True, seed=None)
     noise_gen.reset()  # per video
     for n in range(N_update):
         
@@ -181,7 +178,7 @@ def sequence_for_LSTM(data, model, criterion, optimizer, device,
         
         
         ## compute SSIM loss
-        loss = compute_mixed_loss(predictions, 1* (depths >0).float(), criterion, epoch)
+        loss = compute_mixed_loss(predictions, depths, criterion, epoch)
 
         predictions = predictions.detach()
         depths = depths.detach()
@@ -216,43 +213,3 @@ def sequence_for_LSTM(data, model, criterion, optimizer, device,
     model.reset_states()
     return loss_avg, loss_MSE, loss_SSIM, step_size, zero_run
 
-def init_simulation(device, batch_size=10, network="Transformer", checkpoint_file = None):
-    
-
-    loading_method = CNN_collate if (not ((network =="Transformer") or ("BOBW" in network))) else Transformer_collate
-    train_dataset = EventDepthDataset(data_path+"/train/")
-    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=loading_method)
-    test_dataset = EventDepthDataset(data_path+"/test/")
-    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=False, collate_fn=loading_method)
-    epoch_checkpoint = 0
-
-    # Load the model UNetMobileNetSurreal
-    
-    save_path = f'{results_path}/{network}'
-    if os.path.exists(save_path):
-        shutil.rmtree(save_path)
-    os.makedirs(save_path)
-    if network == "Transformer":
-        model = EventTransformer()
-    elif "BOBW" in network:
-        model = BestOfBothWorld(model_type=network)
-    # else:
-    #     model = UNetMobileNetSurreal(in_channels = 2, out_channels = 1, net_type = network , method = method) ## if no LSTM use there we give previous output as input
-    if checkpoint_path:
-
-        checkpoint_file = f'{checkpoint_path}/{checkpoint_file}'
-        
-        print(f"Loading checkpoint from {checkpoint_file}")
-        try:
-            model.load_state_dict(torch.load(checkpoint_file, map_location=device))
-            epoch_checkpoint = int(checkpoint_file.split("_")[2]) + 1
-        except:
-            print("Checkpoint not found, starting from scratch")
-    model.to(device)
-
-    criterion = torch.nn.CrossEntropyLoss()
-    criterion.to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)
-
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10, eta_min=1e-6)  # 10 = total number of epochs
-    return model, train_loader, test_loader, optimizer, scheduler, criterion, save_path, epoch_checkpoint

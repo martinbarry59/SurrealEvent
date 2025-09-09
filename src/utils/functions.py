@@ -28,24 +28,45 @@ class PersistentNoiseConfig:
     polarity_consistent: bool = False # Mixed polarity for more realistic noise
     max_total_events: int = 3000     # Increased to accommodate more events
     prob_enable: float = 0.8         # Slightly reduce probability for variation
+    
+    # Persistent augmentation settings
+    enable_augmentations: bool = True
+    aug_prob: float = 0.5            # Probability of applying augmentations
+    temporal_jitter_prob: float = 0.4
+    temporal_jitter_std: float = 0.1  # 10% temporal noise std
+    spatial_jitter_prob: float = 0.3
+    spatial_jitter_std: float = 10.0  # Pixel noise std
+    dropout_prob: float = 0.4
+    dropout_rate_range: tuple = (0.1, 0.3)  # 10-30% dropout
+    cluster_dropout_prob: float = 0.5  # Probability of cluster vs random dropout
+    polarity_flip_prob: float = 0.2
+    polarity_flip_rate_range: tuple = (0.1, 0.3)  # 10-30% polarity flips
+    rate_variation_prob: float = 0.25
+    rate_factor_range: tuple = (0.5, 1.5)  # 0.5-1.5x rate variation
 
 class PersistentNoiseGenerator:
-    def __init__(self, width, height, device, config=None, seed=None):
+    def __init__(self, width, height, device, config=None, seed=None, training=True):
         self.width = width
         self.height = height
         self.device = device
+        self.training = training
         self.cfg = config or PersistentNoiseConfig()
-        self.cfg = create_nighttime_noise_config()
         self.rng = torch.Generator(device=device)
         if seed is not None:
             self.rng.manual_seed(seed)
         self.active = False
+        # Persistent augmentation state
+        self.augmentation_state = {}
         self.reset()
 
     def reset(self):
         with torch.no_grad():
             # Decide if noise is enabled this sequence
             self.active = torch.rand(1, generator=self.rng, device=self.device).item() < self.cfg.prob_enable
+            
+            # Initialize persistent augmentation state
+            self._init_persistent_augmentations()
+            
             if not self.active:
                 return
             c = self.cfg
@@ -164,29 +185,37 @@ class PersistentNoiseGenerator:
 
             # Flicker sources (emit only at high sine) - more realistic street light flicker
             if c.flicker_sources>0:
-                time_scalar = (t_min + t_max) / 2  # Use middle time for phase calculation
-                phase = self.flicker_phase + 2*math.pi*c.flicker_freq_hz*time_scalar
-                intensity = (torch.sin(phase)+1)/2
-                # Add some randomness to flicker threshold for more realism
+                # Use midpoint time for phase calculation
+                time_scalar = (t_min + t_max) / 2.0
+                phase = self.flicker_phase + 2 * math.pi * c.flicker_freq_hz * time_scalar  # [flicker_sources]
+                intensity = (torch.sin(phase) + 1.0) / 2.0  # [0,1]
+                # Random per-source activation threshold in [0.7,0.9]
                 flicker_threshold = 0.7 + torch.rand(c.flicker_sources, device=device, generator=self.rng) * 0.2
-                active = intensity > flicker_threshold.unsqueeze(0)
-                active = active.squeeze()
+                active = intensity > flicker_threshold  # boolean mask [flicker_sources]
                 if active.any():
-                    centers = self.flicker_centers[active]
-                    per = max(1, c.flicker_events // max(1, centers.shape[0]))
-                    # Create more realistic light spread pattern
-                    n_events = centers.shape[0] * per
-                    # Generate events in concentric circles for realistic light falloff
-                    angles = torch.rand(n_events, device=device, generator=self.rng) * 2 * math.pi
-                    radii = torch.sqrt(torch.rand(n_events, device=device, generator=self.rng)) * 10.0  # Square root for realistic falloff
-                    offs = torch.stack([radii * torch.cos(angles), radii * torch.sin(angles)], dim=1)
-                    base = centers.repeat_interleave(per, dim=0) + offs
-                    base[:,0].clamp_(0,self.width-1)
-                    base[:,1].clamp_(0,self.height-1)
-                    times = t_min + (t_max - t_min) * torch.rand(base.shape[0], device=device, generator=self.rng)
-                    # Mixed polarity for more realistic flicker
-                    pol = self._pol(base.shape[0], random=True)
-                    flicker_events = torch.stack([times, base[:,0], base[:,1], pol], dim=1)
+                    centers = self.flicker_centers[active]  # [K,2]
+                    K = centers.shape[0]
+                    per = max(1, c.flicker_events // max(1, K))
+                    n_events = K * per
+                    # Angles & radii define offsets (ensure 1D shapes)
+                    angles = torch.rand(n_events, device=device, generator=self.rng) * 2 * math.pi  # [n_events]
+                    radii = torch.sqrt(torch.rand(n_events, device=device, generator=self.rng)) * 10.0  # [n_events]
+                    offs = torch.stack([radii * torch.cos(angles), radii * torch.sin(angles)], dim=1)  # [n_events,2]
+                    base = centers.repeat_interleave(per, dim=0) + offs  # [n_events,2]
+                    base[:,0].clamp_(0, self.width-1)
+                    base[:,1].clamp_(0, self.height-1)
+                    times = t_min + (t_max - t_min) * torch.rand(n_events, device=device, generator=self.rng)  # [n_events]
+                    pol = self._pol(n_events, random=True)  # [n_events]
+                    # Assertions & shape validation
+                    assert times.ndim == 1 and base.ndim == 2 and pol.ndim == 1, (
+                        f"Dim mismatch (times:{times.shape}, base:{base.shape}, pol:{pol.shape})")
+                    assert base.shape[0] == times.shape[0] == pol.shape[0], (
+                        f"Length mismatch (times:{times.shape[0]}, base:{base.shape[0]}, pol:{pol.shape[0]})")
+                    try:
+                        flicker_events = torch.stack([times, base[:,0], base[:,1], pol], dim=1)  # [n_events,4]
+                    except RuntimeError as e:
+                        raise RuntimeError(
+                            f"Flicker stacking failed: times {times.shape}, base {base.shape}, pol {pol.shape}. Error: {e}") from e
                     # Expand to batch size [B, N, 4]
                     flicker_events = flicker_events.unsqueeze(0).expand(batch_size, -1, -1)
                     events.append(flicker_events)
@@ -339,357 +368,282 @@ class PersistentNoiseGenerator:
                     else:
                         final_out = torch.cat([final_out, out[b:b+1, idx]], dim=0)
                 out = final_out
+            
+            # Apply persistent augmentations to noise events
+            out = self.apply_persistent_augmentations(out)
             # Shape [B,M,4]
         return out
-def apply_event_augmentations(events, training=True, aug_prob=0.5, width=346, height=260):
-    """
-    Apply various augmentations to event data to improve robustness.
-    
-    Args:
-        events: [B, N, 4] - (t, x, y, p) with t ∈ [0, 1], x ∈ [0, width-1], y ∈ [0, height-1]
-        training: whether model is in training mode
-        aug_prob: probability of applying augmentations
-        width, height: image dimensions for proper coordinate handling
-    
-    Returns:
-        augmented events
-    """
-    if not training or torch.rand(1).item() > aug_prob:
-        return events
-    B, N, _ = events.shape
-    device = events.device
-    augmented = events.clone()
-    
-    # 1. Temporal jitter (simulate timing noise in real cameras)
-    if torch.rand(1).item() < 0.4:
-        time_jitter = torch.randn_like(augmented[:, :, 0]) * 0.01  # 1% temporal noise
-        augmented[:, :, 0] = (augmented[:, :, 0] + time_jitter).clamp(0, 1)
-    
-    # 2. Spatial jitter (pixel registration errors)
-    if torch.rand(1).item() < 0.3:
-        spatial_jitter_x = torch.randn_like(augmented[:, :, 1]) * 1.5  # ~1.5 pixel noise
-        spatial_jitter_y = torch.randn_like(augmented[:, :, 2]) * 1.5  # ~1.5 pixel noise
-        augmented[:, :, 1] = (augmented[:, :, 1] + spatial_jitter_x).clamp(0, width - 1)
-        augmented[:, :, 2] = (augmented[:, :, 2] + spatial_jitter_y).clamp(0, height - 1)
-    
-    # 3. Event dropout (simulate dead pixels or low-light conditions)
-    if torch.rand(1).item() < 0.4:
-        dropout_rate = torch.rand(1).item() * 0.1 + 0.05  # 5-15% dropout
-        if torch.rand(1).item() < 0.5:
-            # Random dropout
-            keep_mask = torch.rand(B, N, device=device) > dropout_rate
-        else:
-            # Spatial cluster dropout (dead pixel regions)
-            keep_mask = torch.ones(B, N, dtype=torch.bool, device=device)
-            for b in range(B):
-                n_clusters = torch.randint(1, 5, (1,)).item()
-                for _ in range(n_clusters):
-                    # Create spatial clusters of dropped events
-                    center_x = torch.rand(1).item() * width  # 0 to width-1
-                    center_y = torch.rand(1).item() * height  # 0 to height-1
-                    radius = (torch.rand(1).item() * 0.06 + 0.02) * min(width, height)  # 2-8% of image size
-                    
-                    dist_x = (augmented[b, :, 1] - center_x).abs()
-                    dist_y = (augmented[b, :, 2] - center_y).abs()
-                    cluster_mask = (dist_x < radius) & (dist_y < radius)
-                    keep_mask[b] = keep_mask[b] & ~cluster_mask
+    def _init_persistent_augmentations(self):
+        """Initialize persistent augmentation parameters that stay constant for the entire video sequence"""
+        if not self.cfg.enable_augmentations or not self.training:
+            self.augmentation_state = {
+                'enabled': False
+            }
+            return
+        # Decide if augmentations are enabled for this sequence
+        aug_enabled = torch.rand(1, generator=self.rng, device=self.device).item() < self.cfg.aug_prob
         
-        # Apply dropout
-        new_augmented = []
-        for b in range(B):
-            batch_events = augmented[b][keep_mask[b]]  # Select events for this batch
-            new_augmented.append(batch_events)
-        
-        # Find the minimum number of events across batches
-        min_events = min(batch.shape[0] for batch in new_augmented)
-        
-        # Pad or truncate to maintain consistent shape
-        final_augmented = torch.zeros(B, min(N, min_events), 4, device=device)
-        for b in range(B):
-            n_events = min(min_events, new_augmented[b].shape[0])
-            final_augmented[b, :n_events] = new_augmented[b][:n_events]
-        
-        # Pad back to original size if needed
-        if final_augmented.shape[1] < N:
-            padding = torch.zeros(B, N - final_augmented.shape[1], 4, device=device)
-            augmented = torch.cat([final_augmented, padding], dim=1)
-        else:
-            augmented = final_augmented
-    
-    # 4. Polarity flip (sensor noise)
-    if torch.rand(1).item() < 0.2:
-        flip_rate = torch.rand(1).item() * 0.04 + 0.01  # 1-5% polarity flips
-        flip_mask = torch.rand(B, N, device=device) < flip_rate
-        augmented[:, :, 3] = torch.where(flip_mask, -augmented[:, :, 3], augmented[:, :, 3])
-    
-    # # 5. Temporal stretching/compression (different camera speeds)
-    # if torch.rand(1).item() < 0.3:
-    #     time_stretch = torch.rand(1).item() * 0.4 + 0.8  # 0.8-1.2
-    #     augmented[:, :, 0] = (augmented[:, :, 0] * time_stretch).clamp(0, 1)
-    # # 
-    # 6. Event rate variation (simulate different lighting conditions)
-    if torch.rand(1).item() < 0.25:
-        rate_factor = torch.rand(1).item() * 1.0 + 0.5  # 0.5-1.5
-        if rate_factor < 1.0:  # Reduce events (low light)
-            keep_ratio = rate_factor
-            keep_mask = torch.rand(B, N, device=device) < keep_ratio
+        if not aug_enabled:
+            self.augmentation_state = {
+                'enabled': False
+            }
+            return
             
-            # Apply rate variation batch-wise
-            new_augmented = []
-            for b in range(B):
-                batch_events = augmented[b][keep_mask[b]]  # Select events for this batch
-                new_augmented.append(batch_events)
+        c = self.cfg
+        self.augmentation_state = {
+            'enabled': True,
+            # Temporal jitter
+            'temporal_jitter_enabled': torch.rand(1, generator=self.rng, device=self.device).item() < c.temporal_jitter_prob,
+            'temporal_jitter_std': c.temporal_jitter_std,
             
-            # Find the minimum number of events across batches
-            min_events = min(batch.shape[0] for batch in new_augmented)
+            # Spatial jitter  
+            'spatial_jitter_enabled': torch.rand(1, generator=self.rng, device=self.device).item() < c.spatial_jitter_prob,
+            'spatial_jitter_std': c.spatial_jitter_std,
             
-            # Create final tensor with consistent shape
-            final_augmented = torch.zeros(B, min(N, min_events), 4, device=device)
-            for b in range(B):
-                n_events = min(min_events, new_augmented[b].shape[0])
-                final_augmented[b, :n_events] = new_augmented[b][:n_events]
+            # Dropout
+            'dropout_enabled': torch.rand(1, generator=self.rng, device=self.device).item() < c.dropout_prob,
+            'dropout_rate': torch.rand(1, generator=self.rng, device=self.device).item() * (c.dropout_rate_range[1] - c.dropout_rate_range[0]) + c.dropout_rate_range[0],
+            'dropout_is_cluster': torch.rand(1, generator=self.rng, device=self.device).item() < c.cluster_dropout_prob,
             
-            # Pad back to original size if needed
-            if final_augmented.shape[1] < N:
-                padding = torch.zeros(B, N - final_augmented.shape[1], 4, device=device)
-                augmented = torch.cat([final_augmented, padding], dim=1)
-            else:
-                augmented = final_augmented
-    
-    return augmented
+            # Polarity flip
+            'polarity_flip_enabled': torch.rand(1, generator=self.rng, device=self.device).item() < c.polarity_flip_prob,
+            'polarity_flip_rate': torch.rand(1, generator=self.rng, device=self.device).item() * (c.polarity_flip_rate_range[1] - c.polarity_flip_rate_range[0]) + c.polarity_flip_rate_range[0],
+            
+            # Rate variation
+            'rate_variation_enabled': torch.rand(1, generator=self.rng, device=self.device).item() < c.rate_variation_prob,
+            'rate_factor': torch.rand(1, generator=self.rng, device=self.device).item() * (c.rate_factor_range[1] - c.rate_factor_range[0]) + c.rate_factor_range[0],
+        }
+        # Initialize persistent spatial dropout clusters if cluster dropout is enabled
+        if self.augmentation_state['dropout_enabled'] and self.augmentation_state['dropout_is_cluster']:
+            n_clusters = torch.randint(1, 5, (1,), generator=self.rng, device=self.device).item()
+            self.augmentation_state['dropout_clusters'] = []
+            for _ in range(n_clusters):
+                center_x = torch.rand(1, generator=self.rng, device=self.device).item() * self.width
+                center_y = torch.rand(1, generator=self.rng, device=self.device).item() * self.height
+                radius = (torch.rand(1, generator=self.rng, device=self.device).item() * 0.2 + 0.1) * min(self.width, self.height)
+                self.augmentation_state['dropout_clusters'].append({
+                    'center_x': center_x,
+                    'center_y': center_y,
+                    'radius': radius
+                })
 
-
-def add_hot_pixels(events, device, width, height):
-    """Add hot pixel events (common in real event cameras)"""
-    
-    B, N, _ = events.shape
-    n_hot_pixels = torch.randint(5, 1000, (1,)).item()
-    
-    hot_events = torch.zeros(B, n_hot_pixels, 4, device=device)
-    hot_events[:, :, 0] = torch.rand(B, n_hot_pixels, device=device)  # Random times
-    hot_events[:, :, 1] = torch.rand(B, n_hot_pixels, device=device) * (width - 1)  # Random x (pixel coordinates)
-    hot_events[:, :, 2] = torch.rand(B, n_hot_pixels, device=device) * (height - 1)  # Random y (pixel coordinates)
-    hot_events[:, :, 3] = torch.randint(0, 2, (B, n_hot_pixels), device=device) * 2 - 1
-    
-    return torch.cat([events, hot_events], dim=1)
-
-
-def eventstovoxel(events, height=260, width=346, bins=5, training=True, hotpixel=False, aug_prob=0.5):
-    """
-    Converts a batch of events into a voxel grid with optional augmentations.
-    
-    Args:
-        events: [B, N, 4] - (t, x, y, p) with t ∈ [0, 1], x ∈ [0, 1], y ∈ [0, 1]
-        height, width: spatial resolution
-        bins: number of time bins
-        training: whether model is in training mode
-        aug_prob: probability of applying augmentations during training
-
-    Returns:
-        voxel: [B, bins, H, W] voxel grid
-    """
-    B, N, _ = events.shape
-    device = events.device
-
-    # Apply augmentations during training
-    events = 0 * events  # Dummy line to avoid unused variable warning
-    print("events shape:", events.shape)
-    exit()
-    # if hotpixel:
-    events = add_hot_pixels(events, device, width, height)
-    if training:
-        events = apply_event_augmentations(events, training=training, aug_prob=aug_prob, width=width, height=height)
-        B, N, _ = events.shape  # Update shape after augmentations
-    # Add hot pixels (realistic camera noise)
-    
-    # Add random noise events (keeping your existing augmentation)
-    
-    B, N, _ = events.shape  # Final shape after all augmentations
-
-    # Convert normalized coordinates to pixel indices
-    x = (events[:, :, 1]).long().clamp(0, width - 1)
-    y = (events[:, :, 2]).long().clamp(0, height - 1)
-    t = (events[:, :, 0] * bins).long().clamp(0, bins - 1)
-    p = events[:, :, 3].long()
-    neg_p = (p < 0).long()  # Convert polarity to 0/1 for voxel channel indexing
-    pos_p = (p > 0).long()  # Convert polarity to 0/1 for voxel channel indexing
-    
-    # Final channel index: [B, N]
-    c = t
-    voxel = torch.zeros(B, 2 * bins, height, width, device=device)
-    batch_idx = torch.arange(B, device=device).unsqueeze(1).expand(-1, N)
-
-    voxel.index_put_((batch_idx, c, y, x), pos_p * torch.ones_like(t, dtype=torch.float), accumulate=True)
-    voxel.index_put_((batch_idx, c + bins, y, x), neg_p * torch.ones_like(t, dtype=torch.float), accumulate=True)
-    return voxel
-def eventstohistogram(events, height=260, width=346):
+    def apply_persistent_augmentations(self, events):
+        """Apply persistent augmentations that were initialized once and stay constant throughout the video"""
+        if not self.augmentation_state.get('enabled', False):
+            return events
+            
         B, N, _ = events.shape
-        x = (events[:, :, 1] * width).long().clamp(0, width - 1)
-        y = (events[:, :, 2] * height).long().clamp(0, height - 1)
-        p = events[:, :, 3].long().clamp(0, 1)
-
-        hist = torch.zeros(B, 2, height, width, device=events.device)
-        batch_idx = torch.arange(B, device=events.device).unsqueeze(1).expand(-1, N)
-        hist.index_put_((batch_idx, p, y, x), torch.abs(events[:, :, 3]), accumulate=True)
-
-        return hist
-
-def add_frame_to_video(video_writer, images):
-    if images[0].shape[-1] == 4:
-        y = torch.round(images[0][0,:,1])
-        x = torch.round(images[0][0,:,2])
-        img = torch.zeros(260, 346).to(images[0].device)
-        img[x.long(), y.long()] = 1
-    else:
-        img = 1 * (torch.sum(images[0][0], dim=0) > 0)
-    images[0] = img
-    merged = []
-    for img in images:
-        merged.append(img)
-    merged = torch.cat(merged, dim=1).detach().cpu().numpy()
-    merged = (merged * 255 ).astype('uint8')
-    merged = cv2.cvtColor(merged, cv2.COLOR_GRAY2BGR)  # make it (H, W, 3)
-    video_writer.write(merged)  # Write the frame to video
-
-def calc_topk_accuracy(output, target, topk=(1,)):
-    """
-    Modified from: https://gist.github.com/agermanidis/275b23ad7a10ee89adccf021536bb97e
-    Given predicted and ground truth labels,
-    calculate top-k accuracies.
-    """
-    maxk = max(topk)
-    batch_size = target.size(0)
-    _, pred = output.topk(maxk, 1, True, True)
-
-    pred = pred.t()
-    
-    correct = pred.eq(target.view(1, -1).expand_as(pred))
-
-    res = []
-    for k in topk:
-        correct_k = correct[:k].contiguous().view(-1).float().sum(0)
-        res.append(correct_k.mul_(1 / batch_size))
-    return res
-
-import torch
-import cv2
-
-def apply_event_augmentations(events, training=True, aug_prob=0.5, width=346, height=260):
-    """
-    Apply various augmentations to event data to improve robustness.
-    
-    Args:
-        events: [B, N, 4] - (t, x, y, p) with t ∈ [0, 1], x ∈ [0, width-1], y ∈ [0, height-1]
-        training: whether model is in training mode
-        aug_prob: probability of applying augmentations
-        width, height: image dimensions for proper coordinate handling
-    
-    Returns:
-        augmented events
-    """
-    if not training or torch.rand(1).item() > aug_prob:
-        return events
-    B, N, _ = events.shape
-    device = events.device
-    augmented = events.clone()
-    
-    # 1. Temporal jitter (simulate timing noise in real cameras)
-    if torch.rand(1).item() < 0.4:
-        time_jitter = torch.randn_like(augmented[:, :, 0]) * 0.01  # 1% temporal noise
-        augmented[:, :, 0] = (augmented[:, :, 0] + time_jitter).clamp(0, 1)
-    
-    # 2. Spatial jitter (pixel registration errors)
-    if torch.rand(1).item() < 0.3:
-        spatial_jitter_x = torch.randn_like(augmented[:, :, 1]) * 1.5  # ~1.5 pixel noise
-        spatial_jitter_y = torch.randn_like(augmented[:, :, 2]) * 1.5  # ~1.5 pixel noise
-        augmented[:, :, 1] = (augmented[:, :, 1] + spatial_jitter_x).clamp(0, width - 1)
-        augmented[:, :, 2] = (augmented[:, :, 2] + spatial_jitter_y).clamp(0, height - 1)
-    
-    # 3. Event dropout (simulate dead pixels or low-light conditions)
-    if torch.rand(1).item() < 0.4:
-        dropout_rate = torch.rand(1).item() * 0.1 + 0.05  # 5-15% dropout
-        if torch.rand(1).item() < 0.5:
-            # Random dropout
-            keep_mask = torch.rand(B, N, device=device) > dropout_rate
-        else:
-            # Spatial cluster dropout (dead pixel regions)
-            keep_mask = torch.ones(B, N, dtype=torch.bool, device=device)
-            for b in range(B):
-                n_clusters = torch.randint(1, 5, (1,)).item()
-                for _ in range(n_clusters):
-                    # Create spatial clusters of dropped events
-                    center_x = torch.rand(1).item() * width  # 0 to width-1
-                    center_y = torch.rand(1).item() * height  # 0 to height-1
-                    radius = (torch.rand(1).item() * 0.06 + 0.02) * min(width, height)  # 2-8% of image size
-                    
-                    dist_x = (augmented[b, :, 1] - center_x).abs()
-                    dist_y = (augmented[b, :, 2] - center_y).abs()
-                    cluster_mask = (dist_x < radius) & (dist_y < radius)
-                    keep_mask[b] = keep_mask[b] & ~cluster_mask
+        device = events.device
+        augmented = events.clone()
         
-        # Apply dropout
-        new_augmented = []
-        for b in range(B):
-            batch_events = augmented[b][keep_mask[b]]  # Select events for this batch
-            new_augmented.append(batch_events)
+        # 1. Temporal jitter (persistent noise characteristics)
+        if self.augmentation_state['temporal_jitter_enabled']:
+            time_jitter = torch.randn_like(augmented[:, :, 0]) * self.augmentation_state['temporal_jitter_std']
+            augmented[:, :, 0] = (augmented[:, :, 0] + time_jitter).clamp(0, 1)
         
-        # Find the minimum number of events across batches
-        min_events = min(batch.shape[0] for batch in new_augmented)
+        # 2. Spatial jitter (persistent sensor misalignment)
+        if self.augmentation_state['spatial_jitter_enabled']:
+            spatial_jitter_x = torch.randn_like(augmented[:, :, 1]) * self.augmentation_state['spatial_jitter_std']
+            spatial_jitter_y = torch.randn_like(augmented[:, :, 2]) * self.augmentation_state['spatial_jitter_std']
+            augmented[:, :, 1] = (augmented[:, :, 1] + spatial_jitter_x).clamp(0, self.width - 1)
+            augmented[:, :, 2] = (augmented[:, :, 2] + spatial_jitter_y).clamp(0, self.height - 1)
         
-        # Pad or truncate to maintain consistent shape
-        final_augmented = torch.zeros(B, min(N, min_events), 4, device=device)
-        for b in range(B):
-            n_events = min(min_events, new_augmented[b].shape[0])
-            final_augmented[b, :n_events] = new_augmented[b][:n_events]
-        
-        # Pad back to original size if needed
-        if final_augmented.shape[1] < N:
-            padding = torch.zeros(B, N - final_augmented.shape[1], 4, device=device)
-            augmented = torch.cat([final_augmented, padding], dim=1)
-        else:
-            augmented = final_augmented
-    
-    # 4. Polarity flip (sensor noise)
-    if torch.rand(1).item() < 0.2:
-        flip_rate = torch.rand(1).item() * 0.04 + 0.01  # 1-5% polarity flips
-        flip_mask = torch.rand(B, N, device=device) < flip_rate
-        augmented[:, :, 3] = torch.where(flip_mask, -augmented[:, :, 3], augmented[:, :, 3])
-    
-    # # 5. Temporal stretching/compression (different camera speeds)
-    # if torch.rand(1).item() < 0.3:
-    #     time_stretch = torch.rand(1).item() * 0.4 + 0.8  # 0.8-1.2
-    #     augmented[:, :, 0] = (augmented[:, :, 0] * time_stretch).clamp(0, 1)
-    # # 
-    # 6. Event rate variation (simulate different lighting conditions)
-    if torch.rand(1).item() < 0.25:
-        rate_factor = torch.rand(1).item() * 1.0 + 0.5  # 0.5-1.5
-        if rate_factor < 1.0:  # Reduce events (low light)
-            keep_ratio = rate_factor
-            keep_mask = torch.rand(B, N, device=device) < keep_ratio
+        # 3. Event dropout (persistent dead pixel regions or lighting conditions)
+        if self.augmentation_state['dropout_enabled']:
+            dropout_rate = self.augmentation_state['dropout_rate']
             
-            # Apply rate variation batch-wise
+            if self.augmentation_state['dropout_is_cluster']:
+                # Persistent spatial cluster dropout (dead pixel regions)
+                keep_mask = torch.ones(B, N, dtype=torch.bool, device=device)
+                for b in range(B):
+                    for cluster in self.augmentation_state['dropout_clusters']:
+                        center_x = cluster['center_x']
+                        center_y = cluster['center_y'] 
+                        radius = cluster['radius']
+                        
+                        dist_x = (augmented[b, :, 1] - center_x).abs()
+                        dist_y = (augmented[b, :, 2] - center_y).abs()
+                        cluster_mask = (dist_x < radius) & (dist_y < radius)
+                        keep_mask[b] = keep_mask[b] & ~cluster_mask
+            else:
+                # Random dropout with persistent rate
+                keep_mask = torch.rand(B, N, device=device, generator=self.rng) > dropout_rate
+            
+            # Apply dropout
             new_augmented = []
             for b in range(B):
-                batch_events = augmented[b][keep_mask[b]]  # Select events for this batch
+                batch_events = augmented[b][keep_mask[b]]
                 new_augmented.append(batch_events)
             
-            # Find the minimum number of events across batches
-            min_events = min(batch.shape[0] for batch in new_augmented)
-            
-            # Create final tensor with consistent shape
-            final_augmented = torch.zeros(B, min(N, min_events), 4, device=device)
-            for b in range(B):
-                n_events = min(min_events, new_augmented[b].shape[0])
-                final_augmented[b, :n_events] = new_augmented[b][:n_events]
-            
-            # Pad back to original size if needed
-            if final_augmented.shape[1] < N:
-                padding = torch.zeros(B, N - final_augmented.shape[1], 4, device=device)
-                augmented = torch.cat([final_augmented, padding], dim=1)
-            else:
-                augmented = final_augmented
+            if new_augmented:  # Check if any events remain
+                min_events = min(batch.shape[0] for batch in new_augmented)
+                
+                final_augmented = torch.zeros(B, min(N, min_events), 4, device=device)
+                for b in range(B):
+                    n_events = min(min_events, new_augmented[b].shape[0])
+                    if n_events > 0:
+                        final_augmented[b, :n_events] = new_augmented[b][:n_events]
+                
+                # Pad back to original size if needed
+                if final_augmented.shape[1] < N:
+                    padding = torch.zeros(B, N - final_augmented.shape[1], 4, device=device)
+                    augmented = torch.cat([final_augmented, padding], dim=1)
+                else:
+                    augmented = final_augmented
+        
+        # 4. Polarity flip (persistent sensor noise characteristics)
+        if self.augmentation_state['polarity_flip_enabled']:
+            flip_rate = self.augmentation_state['polarity_flip_rate']
+            flip_mask = torch.rand(B, N, device=device, generator=self.rng) < flip_rate
+            augmented[:, :, 3] = torch.where(flip_mask, -augmented[:, :, 3], augmented[:, :, 3])
+        
+        # 5. Event rate variation (persistent lighting/exposure conditions)
+        if self.augmentation_state['rate_variation_enabled']:
+            rate_factor = self.augmentation_state['rate_factor']
+            if rate_factor < 1.0:  # Reduce events (low light conditions)
+                keep_ratio = rate_factor
+                keep_mask = torch.rand(B, N, device=device, generator=self.rng) < keep_ratio
+                
+                new_augmented = []
+                for b in range(B):
+                    batch_events = augmented[b][keep_mask[b]]
+                    new_augmented.append(batch_events)
+                
+                if new_augmented:  # Check if any events remain
+                    min_events = min(batch.shape[0] for batch in new_augmented)
+                    
+                    final_augmented = torch.zeros(B, min(N, min_events), 4, device=device)
+                    for b in range(B):
+                        n_events = min(min_events, new_augmented[b].shape[0])
+                        if n_events > 0:
+                            final_augmented[b, :n_events] = new_augmented[b][:n_events]
+                    
+                    # Pad back to original size if needed
+                    if final_augmented.shape[1] < N:
+                        padding = torch.zeros(B, N - final_augmented.shape[1], 4, device=device)
+                        augmented = torch.cat([final_augmented, padding], dim=1)
+                    else:
+                        augmented = final_augmented
+        
+        return augmented
+
+# def apply_event_augmentations(events, training=True, aug_prob=0.5, width=346, height=260, noise_generator=None):
+#     """
+#     Apply various augmentations to event data to improve robustness.
     
-    return augmented
+#     Args:
+#         events: [B, N, 4] - (t, x, y, p) with t ∈ [0, 1], x ∈ [0, width-1], y ∈ [0, height-1]
+#         training: whether model is in training mode
+#         aug_prob: probability of applying augmentations
+#         width, height: image dimensions for proper coordinate handling
+#         noise_generator: PersistentNoiseGenerator instance for persistent augmentations
+    
+#     Returns:
+#         augmented events
+#     """
+#     # If we have a persistent noise generator, use its persistent augmentations
+#     if noise_generator is not None:
+#         return noise_generator.apply_persistent_augmentations(events)
+    
+#     # Otherwise, fall back to the original per-frame augmentations
+#     if not training or torch.rand(1).item() > aug_prob:
+#         return events
+#     B, N, _ = events.shape
+#     device = events.device
+#     augmented = events.clone()
+    
+#     # 1. Temporal jitter (simulate timing noise in real cameras)
+#     if torch.rand(1).item() < 0.4:
+#         time_jitter = torch.randn_like(augmented[:, :, 0]) * 0.1  # 10% temporal noise
+#         augmented[:, :, 0] = (augmented[:, :, 0] + time_jitter).clamp(0, 1)
+    
+#     # 2. Spatial jitter (pixel registration errors)
+#     if torch.rand(1).item() < 0.3:
+#         spatial_jitter_x = torch.randn_like(augmented[:, :, 1]) * 15  # ~15 pixel noise
+#         spatial_jitter_y = torch.randn_like(augmented[:, :, 2]) * 15  # ~15 pixel noise
+#         augmented[:, :, 1] = (augmented[:, :, 1] + spatial_jitter_x).clamp(0, width - 1)
+#         augmented[:, :, 2] = (augmented[:, :, 2] + spatial_jitter_y).clamp(0, height - 1)
+    
+#     # 3. Event dropout (simulate dead pixels or low-light conditions)
+#     if torch.rand(1).item() < 0.4:
+#         dropout_rate = torch.rand(1).item() * 0.3 + 0.1  # 10-40% dropout
+#         if torch.rand(1).item() < 0.5:
+#             # Random dropout
+#             keep_mask = torch.rand(B, N, device=device) > dropout_rate
+#         else:
+#             # Spatial cluster dropout (dead pixel regions)
+#             keep_mask = torch.ones(B, N, dtype=torch.bool, device=device)
+#             for b in range(B):
+#                 n_clusters = torch.randint(1, 5, (1,)).item()
+#                 for _ in range(n_clusters):
+#                     # Create spatial clusters of dropped events
+#                     center_x = torch.rand(1).item() * width  # 0 to width-1
+#                     center_y = torch.rand(1).item() * height  # 0 to height-1
+#                     radius = (torch.rand(1).item() * 0.2 + 0.1) * min(width, height)  # 10-30% of image size
+
+#                     dist_x = (augmented[b, :, 1] - center_x).abs()
+#                     dist_y = (augmented[b, :, 2] - center_y).abs()
+#                     cluster_mask = (dist_x < radius) & (dist_y < radius)
+#                     keep_mask[b] = keep_mask[b] & ~cluster_mask
+        
+#         # Apply dropout
+#         new_augmented = []
+#         for b in range(B):
+#             batch_events = augmented[b][keep_mask[b]]  # Select events for this batch
+#             new_augmented.append(batch_events)
+        
+#         # Find the minimum number of events across batches
+#         min_events = min(batch.shape[0] for batch in new_augmented)
+        
+#         # Pad or truncate to maintain consistent shape
+#         final_augmented = torch.zeros(B, min(N, min_events), 4, device=device)
+#         for b in range(B):
+#             n_events = min(min_events, new_augmented[b].shape[0])
+#             final_augmented[b, :n_events] = new_augmented[b][:n_events]
+        
+#         # Pad back to original size if needed
+#         if final_augmented.shape[1] < N:
+#             padding = torch.zeros(B, N - final_augmented.shape[1], 4, device=device)
+#             augmented = torch.cat([final_augmented, padding], dim=1)
+#         else:
+#             augmented = final_augmented
+    
+#     # 4. Polarity flip (sensor noise)
+#     if torch.rand(1).item() < 0.2:
+#         flip_rate = torch.rand(1).item() * 0.2 + 0.1  # 10-30% polarity flips
+#         flip_mask = torch.rand(B, N, device=device) < flip_rate
+#         augmented[:, :, 3] = torch.where(flip_mask, -augmented[:, :, 3], augmented[:, :, 3])
+    
+#     # 5. Event rate variation (simulate different lighting conditions)
+#     if torch.rand(1).item() < 0.25:
+#         rate_factor = torch.rand(1).item() * 1.0 + 0.4  # 0.5-1.5
+#         if rate_factor < 1.0:  # Reduce events (low light)
+#             keep_ratio = rate_factor
+#             keep_mask = torch.rand(B, N, device=device) < keep_ratio
+            
+#             # Apply rate variation batch-wise
+#             new_augmented = []
+#             for b in range(B):
+#                 batch_events = augmented[b][keep_mask[b]]  # Select events for this batch
+#                 new_augmented.append(batch_events)
+            
+#             # Find the minimum number of events across batches
+#             min_events = min(batch.shape[0] for batch in new_augmented)
+            
+#             # Create final tensor with consistent shape
+#             final_augmented = torch.zeros(B, min(N, min_events), 4, device=device)
+#             for b in range(B):
+#                 n_events = min(min_events, new_augmented[b].shape[0])
+#                 final_augmented[b, :n_events] = new_augmented[b][:n_events]
+            
+#             # Pad back to original size if needed
+#             if final_augmented.shape[1] < N:
+#                 padding = torch.zeros(B, N - final_augmented.shape[1], 4, device=device)
+#                 augmented = torch.cat([final_augmented, padding], dim=1)
+#             else:
+#                 augmented = final_augmented
+    
+#     return augmented
 
 
 def add_hot_pixels(events, device, width, height):
@@ -706,7 +660,7 @@ def add_hot_pixels(events, device, width, height):
     return torch.cat([events, hot_events], dim=1)
 
 
-def eventstovoxel(events, height=260, width=346, bins=5, training=True, hotpixel=False, aug_prob=0.5):
+def eventstovoxel(events, height=260, width=346, bins=5, training=True, hotpixel=False, aug_prob=0.5, noise_generator=None):
     """
     Converts a batch of events into a voxel grid with optional augmentations.
     
@@ -716,6 +670,7 @@ def eventstovoxel(events, height=260, width=346, bins=5, training=True, hotpixel
         bins: number of time bins
         training: whether model is in training mode
         aug_prob: probability of applying augmentations during training
+        noise_generator: PersistentNoiseGenerator instance for persistent augmentations
 
     Returns:
         voxel: [B, bins, H, W] voxel grid
@@ -725,8 +680,8 @@ def eventstovoxel(events, height=260, width=346, bins=5, training=True, hotpixel
     # Apply augmentations during training
     if hotpixel:
         events = add_hot_pixels(events, device, width, height)
-    if training:
-        events = apply_event_augmentations(events, training=training, aug_prob=aug_prob, width=width, height=height)
+    # if training:
+    #     events = apply_event_augmentations(events, training=training, aug_prob=aug_prob, width=width, height=height, noise_generator=noise_generator)
     # Add hot pixels (realistic camera noise)
     
     # Add random noise events (keeping your existing augmentation)
@@ -745,19 +700,7 @@ def eventstovoxel(events, height=260, width=346, bins=5, training=True, hotpixel
     batch_idx = torch.arange(B, device=device).unsqueeze(1).expand(-1, N)
 
     voxel.index_put_((batch_idx, c, y, x), p * torch.ones_like(t, dtype=torch.float), accumulate=True)
-
     return voxel
-def eventstohistogram(events, height=260, width=346):
-        B, N, _ = events.shape
-        x = (events[:, :, 1] * width).long().clamp(0, width - 1)
-        y = (events[:, :, 2] * height).long().clamp(0, height - 1)
-        p = events[:, :, 3].long().clamp(0, 1)
-
-        hist = torch.zeros(B, 2, height, width, device=events.device)
-        batch_idx = torch.arange(B, device=events.device).unsqueeze(1).expand(-1, N)
-        hist.index_put_((batch_idx, p, y, x), torch.abs(events[:, :, 3]), accumulate=True)
-
-        return hist
 
 def add_frame_to_video(video_writer, images):
     if images[0].shape[-1] == 4:
@@ -850,7 +793,21 @@ def create_nighttime_noise_config():
         grid_events=100,             # Noticeable grid interference
         polarity_consistent=False,   # Mixed polarity for realism
         max_total_events=4000,       # Allow more events for rich night scenes
-        prob_enable=0.9              # High probability for night scenarios
+        prob_enable=0.9,             # High probability for night scenarios
+        # Enhanced augmentation settings for realistic night conditions
+        enable_augmentations=True,
+        aug_prob=0.8,                # High probability for night conditions
+        temporal_jitter_prob=0.6,
+        temporal_jitter_std=0.15,    # More temporal noise at night
+        spatial_jitter_prob=0.5,
+        spatial_jitter_std=12.0,     # More spatial noise
+        dropout_prob=0.6,
+        dropout_rate_range=(0.15, 0.4),  # Higher dropout range
+        cluster_dropout_prob=0.7,    # More cluster dropout (dead regions)
+        polarity_flip_prob=0.3,
+        polarity_flip_rate_range=(0.1, 0.25),
+        rate_variation_prob=0.4,
+        rate_factor_range=(0.4, 1.2)  # More rate variation
     )
 
 def create_minimal_noise_config():
@@ -873,5 +830,42 @@ def create_minimal_noise_config():
         edge_events=0,
         grid_enabled=False,
         max_total_events=1000,
-        prob_enable=0.5
+        prob_enable=0.5,
+        # Minimal augmentation settings
+        enable_augmentations=True,
+        aug_prob=0.3,                # Lower probability for minimal setting
+        temporal_jitter_prob=0.2,
+        temporal_jitter_std=0.05,    # Minimal temporal noise
+        spatial_jitter_prob=0.2,
+        spatial_jitter_std=5.0,      # Minimal spatial noise
+        dropout_prob=0.2,
+        dropout_rate_range=(0.05, 0.15),  # Minimal dropout
+        cluster_dropout_prob=0.3,
+        polarity_flip_prob=0.1,
+        polarity_flip_rate_range=(0.05, 0.15),
+        rate_variation_prob=0.1,
+        rate_factor_range=(0.7, 1.3)
     )
+
+def create_persistent_noise_generator_with_augmentations(width, height, device, config_type='nighttime', training=True, seed=None):
+    """
+    Create a PersistentNoiseGenerator with appropriate configuration for persistent augmentations.
+    
+    Args:
+        width, height: image dimensions
+        device: torch device
+        config_type: 'nighttime' or 'minimal' for different noise levels
+        training: whether in training mode (enables augmentations)
+        seed: random seed for reproducibility
+    
+    Returns:
+        PersistentNoiseGenerator instance configured for persistent augmentations
+    """
+    if config_type == 'nighttime':
+        config = create_nighttime_noise_config()
+    elif config_type == 'minimal':
+        config = create_minimal_noise_config()
+    else:
+        config = PersistentNoiseConfig()  # Default config
+    
+    return PersistentNoiseGenerator(width, height, device, config=config, seed=seed, training=training)
