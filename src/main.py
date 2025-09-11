@@ -99,7 +99,7 @@ def main():
             print(f"Checkpoint not found or failed to load: {e}\nStarting from scratch")
     else:
         print("No checkpoint files found, starting from scratch")
-        model = EConvlstm(model_type=network, width=346, height=260) if "CONVLSTM" in network else BestOfBothWorld(model_type=network, width=346, height=260, embed_dim=256, depth=12, heads=8, num_queries=64)
+        model = EConvlstm(model_type=network, width=346, height=260)
     model.to(device)
 
     # criterion = torch.nn.SmoothL1Loss()

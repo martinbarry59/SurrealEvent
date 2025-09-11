@@ -31,23 +31,25 @@ class EConvlstm(nn.Module):
                     num_layers=1
                 ) for ch in self.encoder_channels[:-1]
             ])
-            # if "denseLSTM" in self.model_type:
-            self.dense_lstm = LSTM(
-                input_size=self.encoder_channels[-1]*self.mheight*self.mwidth,
-                hidden_size=128,
-                num_layers=2,
-                batch_first=True
+            if "DENSELSTM" in self.model_type:
+                self.dense_lstm = LSTM(
+                    input_size=self.encoder_channels[-1]*self.mheight*self.mwidth,
+                    hidden_size=128,
+                    num_layers=2,
+                    batch_first=True
 
-            )
-            self.fc_to_map = nn.Linear(128, self.bottleneck_channels * self.mheight * self.mwidth)
-            self.dense_state = None
-            # self.convlstm = ConvLSTM(
-            #     input_dim=self.encoder_channels[4],
-            #     hidden_dims=[128, 128],
-            #     kernel_size=3,
-            #     num_layers=2
-            # )
+                )
+                self.fc_to_map = nn.Linear(128, self.bottleneck_channels * self.mheight * self.mwidth)
+                self.dense_state = None
+            elif "CONVLSTM" in self.model_type:
+                self.convlstm = ConvLSTM(
+                    input_dim=self.encoder_channels[-1],
+                    hidden_dims=[128, 128],
+                    kernel_size=3,
+                    num_layers=2
+                )
             self.encoder_channels = self.encoder_channels[:-1] + [128]
+            
         else: 
             self.estimated_depth = None
 
@@ -80,12 +82,12 @@ class EConvlstm(nn.Module):
         if final_conv.bias is not None:
             nn.init.constant_(final_conv.bias, -2.0)  # Negative bias pushes sigmoid away from 0.5      
     def reset_states(self):
-        self.dense_state  = None
+        if "DENSELSTM" in self.model_type:
+            self.dense_state  = None
+        elif "CONVLSTM" in self.model_type:
+            self.convlstm.reset_hidden()
         if "LSTM" in self.model_type:
-            # self.convlstm.reset_hidden()
-            if self.dense_state is not None:
-                h, c = self.dense_state
-                self.dense_state = (h.detach(), c.detach())
+                
             if self.skip_lstm:
                 for skip_lstm in self.skip_convlstms:
                     skip_lstm.reset_hidden()
@@ -93,10 +95,12 @@ class EConvlstm(nn.Module):
             self.estimated_depth = None
     def detach_states(self):
         if "LSTM" in self.model_type:
-            if self.dense_state is not None:
-                h, c = self.dense_state
-                self.dense_state = (h.detach(), c.detach())
-            # self.convlstm.detach_hidden()
+            if "DENSELSTM" in self.model_type:
+                if self.dense_state is not None:
+                    h, c = self.dense_state
+                    self.dense_state = (h.detach(), c.detach())
+            elif "CONVLSTM" in self.model_type:
+                self.convlstm.detach_hidden()
             if self.skip_lstm:
                 for skip_lstm in self.skip_convlstms:
                     skip_lstm.detach_hidden()
@@ -156,26 +160,35 @@ class EConvlstm(nn.Module):
             lstm_inputs.append(interpolated)
         lstm_inputs = torch.stack(lstm_inputs, dim=1)
         skip_outputs = []
+        gate = 1
+        if self.training and torch.rand(1) < 0.1:
+            gate = 0
+            print("Skipping LSTM for this sequence")
         if self.skip_lstm:
             for i, skip_lstm in enumerate(self.skip_convlstms):
                 # Stack features for this skip level: [B, T, C, H, W]
                 skip_feats = torch.stack(timed_features[i], dim=1)
                 skip_out = skip_lstm(skip_feats)  # Output: [B, T, C, H, W]
-                skip_outputs.append(skip_out.clone())
-        # encodings = self.convlstm(lstm_inputs)
-        # Dense LSTM at the lowest layer
+                skip_outputs.append(skip_out.clone()) if gate == 1 else skip_outputs.append(skip_out.clone().detach() * gate)
+         
         B, T, Cb, Hb, Wb = lstm_inputs.shape
-        x_seq = lstm_inputs.flatten(2)  # [B, T, Cb*Hb*Wb]
+        print(f"data statistics mean: {lstm_inputs.mean().item()}, std: {lstm_inputs.std()},  min: {lstm_inputs.min().item()}, max: {lstm_inputs.max().item()}")
+        if "DENSELSTM" in self.model_type:
+        # 
+        # Dense LSTM at the lowest layer
+            
+            x_seq = lstm_inputs.flatten(2)  # [B, T, Cb*Hb*Wb]
+            
+            if self.dense_state is None:
+                enc_seq, self.dense_state = self.dense_lstm(x_seq)                 # enc_seq: [B, T, 128]
+            else:
+                enc_seq, self.dense_state = self.dense_lstm(x_seq, self.dense_state)
 
-        if self.dense_state is None:
-            enc_seq, self.dense_state = self.dense_lstm(x_seq)                 # enc_seq: [B, T, 128]
-        else:
-            enc_seq, self.dense_state = self.dense_lstm(x_seq, self.dense_state)
-
-        # Project back to spatial bottleneck map
-        enc_flat = self.fc_to_map(enc_seq.reshape(B * T, -1))                  # [B*T, Cb_out*Hb*Wb]
-        enc_maps = enc_flat.view(B, T, self.bottleneck_channels, self.mheight, self.mwidth)
-
+            # Project back to spatial bottleneck map
+            enc_flat = self.fc_to_map(enc_seq.reshape(B * T, -1))                  # [B*T, Cb_out*Hb*Wb]
+            encodings = enc_flat.view(B, T, self.bottleneck_channels, self.mheight, self.mwidth)
+        elif "CONVLSTM" in self.model_type:
+            encodings = self.convlstm(lstm_inputs)
         # Decode to full self.resolution depth map
         outputs = []
         for t in range(T):
@@ -183,8 +196,8 @@ class EConvlstm(nn.Module):
                 skip_feats_t = [skip_outputs[i][:, t] for i in range(len(skip_outputs))]
             else:
                 skip_feats_t = [timed_features[i][t] for i in range(len(timed_features))]
-            x = self.decoder(enc_maps[:, t], skip_feats_t)                      # [B, C_dec, H, W]
+            x = self.decoder(encodings[:, t], skip_feats_t)                      # [B, C_dec, H, W]
             outputs.append(self.final_conv(x))                                  # [B, 1, H, W]
 
         outputs = torch.cat(outputs, dim=1)  # [B, T, H, W]
-        return outputs, enc_maps.detach(), seq_events
+        return outputs, encodings.detach(), seq_events

@@ -700,7 +700,7 @@ def eventstovoxel(events, height=260, width=346, bins=5, training=True, hotpixel
     batch_idx = torch.arange(B, device=device).unsqueeze(1).expand(-1, N)
 
     voxel.index_put_((batch_idx, c, y, x), p * torch.ones_like(t, dtype=torch.float), accumulate=True)
-    return voxel
+    return voxel    
 
 def add_frame_to_video(video_writer, images):
     if images[0].shape[-1] == 4:
