@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
+from utils.functions import eventstovoxel
 """
 EventSegFast: Efficient human segmentation model for event-camera voxel inputs.
 Design goals:
@@ -127,7 +127,9 @@ class TemporalAggregator(nn.Module):
 
     def reset(self):
         self.state = None
-
+    def detach(self):
+        if self.state is not None:
+            self.state = self.state.detach()
     def forward(self, feat):
         # feat: [B, C, H, W]
         token = self.pool(feat).flatten(1)  # [B, C]
@@ -154,7 +156,9 @@ class TemporalMemory(nn.Module):
 
     def reset(self):
         self.mem = None
-
+    def detach(self):
+        if self.mem is not None:
+            self.mem = self.mem.detach()
     def forward(self, x):
         if self.mem is None:
             self.mem = x.detach()
@@ -218,31 +222,53 @@ class EventSegFast(nn.Module):
         self.fusion = CrossScaleFusion([base_ch, base_ch*2, base_ch*4])
         self.head = SegmentationHead(128)
 
-    def reset_state(self):
+    def reset_states(self):
         self.temporal_agg.reset()
         self.temporal_mem.reset()
-
+    def detach_states(self):
+        self.temporal_agg.detach()
+        self.temporal_mem.detach()
     @torch.inference_mode()
-    def step(self, voxel, density=None):
+    def step(self, event_sequence, density=None):
         """Streaming single-step inference.
         voxel: [B, C, H, W]
         density: optional [B, H, W]
         """
-        return self.forward(voxel, density)
+        return self.forward(event_sequence, density)
 
-    def forward(self, voxel, density=None):
+    def forward(self, event_sequence, training=False, hotpixel=False, density=None):
         # voxel: [B, C, H, W]
-        x = self.embed(voxel, density)
-        x = self.temporal_agg(x)
-        x = self.temporal_mem(x)
+        outputs = []
+        seq_events = []
+        for events in event_sequence:
+            min_t = torch.min(events[:, :, 0], dim=1, keepdim=True)[0]
+            max_t = torch.max(events[:, :, 0], dim=1, keepdim=True)[0]
+            denom = (max_t - min_t)
+            # Avoid division by zero, but only where denom is zero
+            # print(f"Target time range: [{events[:, :, 0].min():.3f}, {events[:, :, 0].max():.3f}]")
+            # print(f"Target x range: [{events[:, :, 1].min():.3f}, {events[:, :, 1].max():.3f}]")
+            # print(f"Target y range: [{events[:, :, 2].min():.3f}, {events[:, :, 2].max():.3f}]")
+            # print(f"Target polarity range: [{events[:, :, 3].min():.3f}, {events[:, :, 3].max():.3f}]")
+            denom[denom < 1e-8] = 1.0  # If all times are the same, set denom to 1 to avoid NaN
+            events[:, :, 0] = (events[:, :, 0] - min_t) / denom
+            events[:,:, 1] = events[:, :, 1].clamp(0, self.width-1)
+            events[:,:, 2] = events[:, :, 2].clamp(0, self.height-1)
 
-        f1 = self.enc1(x)               # [B, C, H, W]
-        f2 = self.enc2(self.down1(f1))  # [B, 2C, H/2, W/2]
-        f3 = self.enc3(self.down2(f2))  # [B, 4C, H/4, W/4]
+            hist_events = eventstovoxel(events, self.height, self.width, training=training, hotpixel=hotpixel).float()
+            seq_events.append(hist_events)
+            x = self.embed(hist_events, density)
+            x = self.temporal_agg(x)
+            x = self.temporal_mem(x)
 
-        fused = self.fusion([f1, f2, f3])
-        out = self.head(fused)          # [B,1,H,W]
-        return out
+            f1 = self.enc1(x)               # [B, C, H, W]
+            f2 = self.enc2(self.down1(f1))  # [B, 2C, H/2, W/2]
+            f3 = self.enc3(self.down2(f2))  # [B, 4C, H/4, W/4]
+
+            fused = self.fusion([f1, f2, f3])
+            out = self.head(fused)          # [B,1,H,W]
+            outputs.append(out)
+        outputs = torch.stack(outputs, dim=1).squeeze(2)  # [B, T, H, W]
+        return outputs, None, seq_events  # No intermediate encodings
 
 
 if __name__ == '__main__':

@@ -9,7 +9,7 @@ import tqdm
 import os
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # or use 'XVID' for .avi
-
+from models.EventSegFast import EventSegFast
 import lpips
 
 from utils.nn_utils import sequence_for_LSTM
@@ -61,11 +61,11 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
     return sum(epoch_loss)/len(epoch_loss)
 
 def main():
-    batch_train = 15
-    batch_test = 80
+    batch_train = 1
+    batch_test = 1
 
     network = "CONVLSTM" # LSTM, Transformer, BOBWFF, BOBWLSTM
-    
+    network = "SegFast" # LSTM, Transformer, BOBWFF, BOBWLSTM
     ## set seed for reproducibility
     # torch.manual_seed(42)
     # torch.cuda.manual_seed(42)
@@ -88,18 +88,20 @@ def main():
             except Exception:
                 return -1
         checkpoint_file = max(checkpoint_files, key=extract_epoch)
-        
+    if "LSTM" in network:
         model = EConvlstm(model_type=network, width=346, height=260)
-        print(f"Loading checkpoint from {checkpoint_file}")
-        try:
-            model.load_state_dict(torch.load(checkpoint_file, map_location=device))
-            epoch_checkpoint = extract_epoch(checkpoint_file) + 1
-            print(f"Resuming from epoch {epoch_checkpoint}")
-        except Exception as e:
-            print(f"Checkpoint not found or failed to load: {e}\nStarting from scratch")
-    else:
-        print("No checkpoint files found, starting from scratch")
-        model = EConvlstm(model_type=network, width=346, height=260)
+    elif "SegFast" in network:
+        model = EventSegFast(voxel_channels=5, height=260, width=346, base_ch=48, use_gru=True)
+    print(f"Loading checkpoint from {checkpoint_file}")
+    #     try:
+    #         model.load_state_dict(torch.load(checkpoint_file, map_location=device))
+    #         epoch_checkpoint = extract_epoch(checkpoint_file) + 1
+    #         print(f"Resuming from epoch {epoch_checkpoint}")
+    #     except Exception as e:
+    #         print(f"Checkpoint not found or failed to load: {e}\nStarting from scratch")
+    # else:
+    #     print("No checkpoint files found, starting from scratch")
+    #     model = EConvlstm(model_type=network, width=346, height=260)
     model.to(device)
 
     # criterion = torch.nn.SmoothL1Loss()
