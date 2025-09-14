@@ -1,5 +1,6 @@
 
-from models.ConvLSTM import EConvlstm
+# from models.ConvLSTM import EConvlstm
+from models.EfficientConvLSTM import EfficientConvLSTM as EConvlstm
 from utils.dataloader import EventDepthDataset, Transformer_collate
 
 import torch
@@ -32,7 +33,7 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
             writer_path = f'{save_path}/{tqdm_str}_EPOCH_{epoch}_video_{batch_step}.mp4' if save_path else None
             if save_path and not os.path.exists(writer_path):
                 os.makedirs(os.path.dirname(writer_path), exist_ok=True)
-            video_writer = cv2.VideoWriter(writer_path, fourcc, 30, (3*346,260)) if (not train or batch_step % 100 == 0 and save_path) else None
+            video_writer = cv2.VideoWriter(writer_path, fourcc, 30, (3*346,260)) if (not train or batch_step % 10 == 0 and save_path) else None
             # with torch.amp.autocast(device_type=device.type):
             loss_avg, loss_MSE, loss_SSIM, step_size, zero_run = sequence_for_LSTM(data, model, criterion, optimizer, device, train, epoch, scaler, video_writer=video_writer)
 
@@ -61,11 +62,11 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
     return sum(epoch_loss)/len(epoch_loss)
 
 def main():
-    batch_train = 1
-    batch_test = 1
+    batch_train = 15
+    batch_test = 80
 
     network = "CONVLSTM" # LSTM, Transformer, BOBWFF, BOBWLSTM
-    network = "SegFast" # LSTM, Transformer, BOBWFF, BOBWLSTM
+    # network = "EventSegFast" # LSTM, Transformer, BOBWFF, BOBWLSTM
     ## set seed for reproducibility
     # torch.manual_seed(42)
     # torch.cuda.manual_seed(42)
@@ -78,7 +79,7 @@ def main():
     checkpoint_file = None
     if checkpoint_path:
         checkpoint_files = glob.glob(f'{checkpoint_path}/model_epoch_*_{network}.pth')
-        print(checkpoint_files)
+        print(checkpoint_files, network, f"model_epoch_*_{network}")
     if checkpoint_files:
         # Extract epoch numbers and find the file with the highest epoch
         def extract_epoch(fp):
@@ -91,17 +92,14 @@ def main():
     if "LSTM" in network:
         model = EConvlstm(model_type=network, width=346, height=260)
     elif "SegFast" in network:
-        model = EventSegFast(voxel_channels=5, height=260, width=346, base_ch=48, use_gru=True)
+        model = EventSegFast(model_type=network, voxel_channels=5, height=260, width=346, base_ch=48, use_gru=True)
     print(f"Loading checkpoint from {checkpoint_file}")
-    #     try:
-    #         model.load_state_dict(torch.load(checkpoint_file, map_location=device))
-    #         epoch_checkpoint = extract_epoch(checkpoint_file) + 1
-    #         print(f"Resuming from epoch {epoch_checkpoint}")
-    #     except Exception as e:
-    #         print(f"Checkpoint not found or failed to load: {e}\nStarting from scratch")
-    # else:
-    #     print("No checkpoint files found, starting from scratch")
-    #     model = EConvlstm(model_type=network, width=346, height=260)
+    try:
+        model.load_state_dict(torch.load(checkpoint_file, map_location=device))
+        epoch_checkpoint = extract_epoch(checkpoint_file) + 1
+        print(f"Resuming from epoch {epoch_checkpoint}")
+    except Exception as e:
+        print(f"Checkpoint not found or failed to load: {e}\nStarting from scratch")
     model.to(device)
 
     # criterion = torch.nn.SmoothL1Loss()

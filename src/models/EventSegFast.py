@@ -86,10 +86,14 @@ class SqueezeExcite(nn.Module):
 class VoxelEmbedding(nn.Module):
     def __init__(self, in_ch, embed_dim):
         super().__init__()
-        self.temporal_mix = nn.Sequential(
-            nn.Conv2d(in_ch, in_ch, kernel_size=3, padding=1, groups=in_ch, bias=False),
-            nn.BatchNorm2d(in_ch),
-            nn.Conv2d(in_ch, embed_dim, 1, bias=False),
+        # Aggressive downsampling right at the start - 4x smaller (2x + 2x)
+        self.downsample_conv = nn.Sequential(
+            # First 2x downsample
+            nn.Conv2d(in_ch, embed_dim, kernel_size=3, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(embed_dim),
+            nn.SiLU(inplace=True),
+            # Second 2x downsample  
+            nn.Conv2d(embed_dim, embed_dim, kernel_size=3, stride=2, padding=1, bias=False),
             nn.BatchNorm2d(embed_dim),
             nn.SiLU(inplace=True)
         )
@@ -98,10 +102,12 @@ class VoxelEmbedding(nn.Module):
         self.beta = nn.Parameter(torch.zeros(1, embed_dim, 1, 1))
 
     def forward(self, x, density=None):
-        # x: [B, C, H, W], density: optional per-pixel event counts
-        h = self.temporal_mix(x)
+        # x: [B, C, H, W] -> [B, embed_dim, H/4, W/4] 
+        h = self.downsample_conv(x)
         if density is not None:
-            d = torch.log1p(density).unsqueeze(1)  # [B,1,H,W]
+            # Downsample density to match
+            d = F.avg_pool2d(density.unsqueeze(1), 4, 4)  # [B,1,H/4,W/4]
+            d = torch.log1p(d)
             d = (d - d.mean(dim=[2,3], keepdim=True)) / (d.std(dim=[2,3], keepdim=True) + 1e-5)
             h = h * (1 + 0.1 * d)  # mild modulation
         return h * self.gamma + self.beta
@@ -137,10 +143,14 @@ class TemporalAggregator(nn.Module):
         if self.use_gru:
             if self.state is None:
                 self.state = torch.zeros_like(token)
+            # Detach state to prevent gradient accumulation
             self.state = self.rnn(token, self.state)
             core = self.state
         else:
-            core = token if self.state is None else 0.9 * self.state + 0.1 * token
+            if self.state is None:
+                core = token
+            else:
+                core = 0.9 * self.state + 0.1 * token
             self.state = core
         gate = self.gate(core).unsqueeze(-1).unsqueeze(-1)
         infused = feat + gate * self.proj_out(core).unsqueeze(-1).unsqueeze(-1)
@@ -148,33 +158,46 @@ class TemporalAggregator(nn.Module):
 
 
 class TemporalMemory(nn.Module):
-    def __init__(self, channels, decay=0.9):
+    def __init__(self, channels, hidden_dim=16):
         super().__init__()
-        self.decay = decay
         self.register_buffer('mem', None, persistent=False)
         self.norm = nn.BatchNorm2d(channels)
-
+        self.gate_net = nn.Sequential(
+            # Input: current features + memory + difference
+            nn.Conv2d(channels * 2, hidden_dim, 3, 1, 1, bias=False),
+            nn.BatchNorm2d(hidden_dim),
+            nn.SiLU(inplace=True),
+            nn.Conv2d(hidden_dim, hidden_dim, 3, 1, 1, bias=False),
+            nn.BatchNorm2d(hidden_dim),
+            nn.SiLU(inplace=True),
+            nn.Conv2d(hidden_dim, 1, 1),
+            nn.Sigmoid()
+        )
     def reset(self):
         self.mem = None
+        
     def detach(self):
         if self.mem is not None:
             self.mem = self.mem.detach()
+            
     def forward(self, x):
         if self.mem is None:
-            self.mem = x.detach()
+            self.mem = x.clone()  # Clone to avoid sharing storage
         else:
-            self.mem = self.decay * self.mem + (1 - self.decay) * x.detach()
-        fused = 0.5 * x + 0.5 * self.mem
-        return self.norm(fused)
+            # Detach to prevent gradient accumulation across time steps
+            gate_input = torch.cat([x, self.mem], dim=1)  # [B, 2*C, H, W]
+            update_rate = self.gate_net(gate_input)  # [B, 1, H, W]
+            self.mem = update_rate * self.mem + (1 - update_rate) * x
+        return self.norm(self.mem)
 
 
 class CrossScaleFusion(nn.Module):
     def __init__(self, channels):
         super().__init__()
-        self.lats = nn.ModuleList([nn.Conv2d(c, 96, 1) for c in channels])
+        self.lats = nn.ModuleList([nn.Conv2d(c, 48, 1) for c in channels])  # Reduced from 96 to 48
         self.out_conv = nn.Sequential(
-            nn.Conv2d(96 * len(channels), 128, 1, bias=False),
-            nn.BatchNorm2d(128),
+            nn.Conv2d(48 * len(channels), 64, 1, bias=False),  # Reduced from 96*3=288->128 to 48*3=144->64
+            nn.BatchNorm2d(64),
             nn.SiLU(inplace=True)
         )
     def forward(self, feats):
@@ -191,25 +214,50 @@ class CrossScaleFusion(nn.Module):
 
 
 class SegmentationHead(nn.Module):
-    def __init__(self, in_ch, mid=96):
+    def __init__(self, in_ch, mid=96, target_height=260, target_width=346):
         super().__init__()
+        self.target_height = target_height
+        self.target_width = target_width
+        
+        # Process at low resolution first
         self.block = nn.Sequential(
             _depthwise_separable(in_ch, mid),
             _depthwise_separable(mid, mid),
-            nn.Conv2d(mid, 1, 1)
+            nn.Conv2d(mid, 32, 1)  # Reduce channels before upsampling
         )
+        
+        # Learnable 4x upsampling with transposed convolutions
+        self.upsample = nn.Sequential(
+            # First 2x upsample
+            nn.ConvTranspose2d(32, 16, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(16),
+            nn.SiLU(inplace=True),
+            # Second 2x upsample  
+            nn.ConvTranspose2d(16, 8, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(8),
+            nn.SiLU(inplace=True),
+            # Final classification
+            nn.Conv2d(8, 1, 1)
+        )
+        
     def forward(self, x):
-        return torch.sigmoid(self.block(x))
+        x = self.block(x)  # Process at low resolution
+        ## interpolate to target 1/4 size if needed
+        x = self.upsample(x)  # Learnable 4x upsampling
+        x = F.interpolate(x, size=(self.target_height, self.target_width), mode='bilinear', align_corners=False)
+
+        return torch.sigmoid(x)
 
 
 class EventSegFast(nn.Module):
-    def __init__(self, voxel_channels, height=260, width=346, base_ch=48, use_gru=True):
+    def __init__(self, model_type, voxel_channels, height=260, width=346, base_ch=24, use_gru=True):  # Reduced from 48 to 24
         super().__init__()
         self.height = height
         self.width = width
-
+        self.model_type = model_type
         self.embed = VoxelEmbedding(voxel_channels, base_ch)
-        self.temporal_agg = TemporalAggregator(base_ch, hidden_dim=128, use_gru=use_gru)
+
+        self.temporal_agg = TemporalAggregator(base_ch, hidden_dim=64, use_gru=use_gru)  # Reduced from 128 to 64
         self.temporal_mem = TemporalMemory(base_ch)
 
         # Encoder hierarchy
@@ -220,7 +268,7 @@ class EventSegFast(nn.Module):
         self.enc3 = InvertedResidual(base_ch*4, base_ch*4, expansion=4)
 
         self.fusion = CrossScaleFusion([base_ch, base_ch*2, base_ch*4])
-        self.head = SegmentationHead(128)
+        self.head = SegmentationHead(64, target_height=height, target_width=width)  # Pass target size
 
     def reset_states(self):
         self.temporal_agg.reset()
@@ -234,41 +282,51 @@ class EventSegFast(nn.Module):
         voxel: [B, C, H, W]
         density: optional [B, H, W]
         """
-        return self.forward(event_sequence, density)
+        return self.forward(event_sequence, training=False, hotpixel=False, density=density)
 
     def forward(self, event_sequence, training=False, hotpixel=False, density=None):
-        # voxel: [B, C, H, W]
+        # Memory-efficient approach: don't store all outputs, process one by one
+        
+        # Training mode: store outputs for backprop
         outputs = []
         seq_events = []
-        for events in event_sequence:
-            min_t = torch.min(events[:, :, 0], dim=1, keepdim=True)[0]
-            max_t = torch.max(events[:, :, 0], dim=1, keepdim=True)[0]
-            denom = (max_t - min_t)
-            # Avoid division by zero, but only where denom is zero
-            # print(f"Target time range: [{events[:, :, 0].min():.3f}, {events[:, :, 0].max():.3f}]")
-            # print(f"Target x range: [{events[:, :, 1].min():.3f}, {events[:, :, 1].max():.3f}]")
-            # print(f"Target y range: [{events[:, :, 2].min():.3f}, {events[:, :, 2].max():.3f}]")
-            # print(f"Target polarity range: [{events[:, :, 3].min():.3f}, {events[:, :, 3].max():.3f}]")
-            denom[denom < 1e-8] = 1.0  # If all times are the same, set denom to 1 to avoid NaN
-            events[:, :, 0] = (events[:, :, 0] - min_t) / denom
-            events[:,:, 1] = events[:, :, 1].clamp(0, self.width-1)
-            events[:,:, 2] = events[:, :, 2].clamp(0, self.height-1)
+       
+        for i, events in enumerate(event_sequence):
+            with torch.no_grad():
+                min_t = torch.min(events[:, :, 0], dim=1, keepdim=True)[0]
+                max_t = torch.max(events[:, :, 0], dim=1, keepdim=True)[0]
+                denom = (max_t - min_t)
+                denom[denom < 1e-8] = 1.0
+                events = events.clone()
+                events[:, :, 0] = (events[:, :, 0] - min_t) / denom
+                events[:,:, 1] = events[:, :, 1].clamp(0, self.width-1)
+                events[:,:, 2] = events[:, :, 2].clamp(0, self.height-1)
 
-            hist_events = eventstovoxel(events, self.height, self.width, training=training, hotpixel=hotpixel).float()
-            seq_events.append(hist_events)
-            x = self.embed(hist_events, density)
-            x = self.temporal_agg(x)
-            x = self.temporal_mem(x)
-
-            f1 = self.enc1(x)               # [B, C, H, W]
-            f2 = self.enc2(self.down1(f1))  # [B, 2C, H/2, W/2]
-            f3 = self.enc3(self.down2(f2))  # [B, 4C, H/4, W/4]
-
-            fused = self.fusion([f1, f2, f3])
-            out = self.head(fused)          # [B,1,H,W]
-            outputs.append(out)
+                hist_events = eventstovoxel(events, self.height, self.width, training=training, hotpixel=hotpixel).float()
+                seq_events.append(hist_events.detach())
+            with torch.set_grad_enabled(training):
+                out = self._forward_single(hist_events, density)
+                outputs.append(out)
+            
+                
         outputs = torch.stack(outputs, dim=1).squeeze(2)  # [B, T, H, W]
-        return outputs, None, seq_events  # No intermediate encodings
+        return outputs, None, seq_events
+
+    
+
+    def _forward_single(self, hist_events, density=None):
+        """Forward pass for single timestep"""
+        x = self.embed(hist_events, density)
+        x = self.temporal_agg(x)
+        x = self.temporal_mem(x)
+
+        f1 = self.enc1(x)               # [B, C, H, W]
+        f2 = self.enc2(self.down1(f1))  # [B, 2C, H/2, W/2]
+        f3 = self.enc3(self.down2(f2))  # [B, 4C, H/4, W/4]
+
+        fused = self.fusion([f1, f2, f3])
+        out = self.head(fused)          # [B,1,H,W]
+        return out
 
 
 if __name__ == '__main__':

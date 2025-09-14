@@ -160,16 +160,13 @@ class EConvlstm(nn.Module):
             lstm_inputs.append(interpolated)
         lstm_inputs = torch.stack(lstm_inputs, dim=1)
         skip_outputs = []
-        gate = 1
-        if self.training and torch.rand(1) < 0.1:
-            gate = 0
-            print("Skipping LSTM for this sequence")
+        
         if self.skip_lstm:
             for i, skip_lstm in enumerate(self.skip_convlstms):
                 # Stack features for this skip level: [B, T, C, H, W]
                 skip_feats = torch.stack(timed_features[i], dim=1)
                 skip_out = skip_lstm(skip_feats)  # Output: [B, T, C, H, W]
-                skip_outputs.append(skip_out.clone()) if gate == 1 else skip_outputs.append(skip_out.clone().detach() * gate)
+                skip_outputs.append(skip_out.clone())
          
         B, T, Cb, Hb, Wb = lstm_inputs.shape
         print(f"data statistics mean: {lstm_inputs.mean().item()}, std: {lstm_inputs.std()},  min: {lstm_inputs.min().item()}, max: {lstm_inputs.max().item()}")
