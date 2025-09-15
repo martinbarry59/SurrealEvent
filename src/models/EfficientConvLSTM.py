@@ -129,7 +129,7 @@ class EfficientDecoder(nn.Module):
         
     def forward(self, x, features):
         # features are in forward order, we need them in reverse
-        skip_features = features[::-1][1:]  # Exclude the bottleneck
+        skip_features = features[::-1]  # Exclude the bottleneck
         
         for i, (layer, skip_feat) in enumerate(zip(self.decoder_layers, skip_features)):
             # Upsample
@@ -137,10 +137,10 @@ class EfficientDecoder(nn.Module):
             x = layer[1](x)  # BatchNorm2d
             x = layer[2](x)  # GELU
             
+
             # Adjust size to match skip connection
             if x.shape[-2:] != skip_feat.shape[-2:]:
                 x = F.interpolate(x, size=skip_feat.shape[-2:], mode='bilinear', align_corners=False)
-            
             # Apply skip connection
             if self.method == "concatenate":
                 x = torch.cat([x, skip_feat], dim=1)
@@ -151,7 +151,6 @@ class EfficientDecoder(nn.Module):
             x = layer[3](x)  # Conv2d
             x = layer[4](x)  # BatchNorm2d
             x = layer[5](x)  # GELU
-            
         return x
 
 class EfficientConvLSTM(nn.Module):
@@ -173,46 +172,39 @@ class EfficientConvLSTM(nn.Module):
         # Adjust bottleneck accordingly
         self.mheight = 9
         self.mwidth = 11
-        self.bottleneck_channels = 64  # Reduced from 128
-        
-        # Add gradient monitoring
-        self.gradient_clip_val = 1.0
-        
+        self.mheight = 9
+        self.mwidth = 11
+        self.bottleneck_channels = 128
+
         if "LSTM" in self.model_type:
             if self.skip_lstm:
                 self.skip_convlstms = nn.ModuleList([
-                    ConvLSTM(
-                        input_dim=ch,
-                        hidden_dims=[ch//2],  # Reduce hidden dims to prevent overfitting
-                        kernel_size=3,
-                        num_layers=1
-                    ) for ch in self.encoder_channels[:-1]
-                ])
-                
+                ConvLSTM(
+                    input_dim=ch,
+                    hidden_dims=[ch],
+                    kernel_size=3,
+                    num_layers=1
+                ) for ch in self.encoder_channels[:-1]
+            ])
             if "DENSELSTM" in self.model_type:
                 self.dense_lstm = LSTM(
                     input_size=self.encoder_channels[-1]*self.mheight*self.mwidth,
-                    hidden_size=64,  # Reduced from 128
+                    hidden_size=128,
                     num_layers=2,
-                    batch_first=True,
-                    dropout=0.1
+                    batch_first=True
+
                 )
-                self.fc_to_map = nn.Linear(64, self.bottleneck_channels * self.mheight * self.mwidth)
+                self.fc_to_map = nn.Linear(self.bottleneck_channels, self.bottleneck_channels * self.mheight * self.mwidth)
                 self.dense_state = None
-                
             elif "CONVLSTM" in self.model_type:
                 self.convlstm = ConvLSTM(
                     input_dim=self.encoder_channels[-1],
-                    hidden_dims=[64, 64],  # Reduced from [128, 128]
+                    hidden_dims=[self.bottleneck_channels, self.bottleneck_channels],
                     kernel_size=3,
                     num_layers=2
                 )
-                
-            # Update encoder channels for skip connections
-            if self.skip_lstm:
-                self.encoder_channels = [ch//2 for ch in self.encoder_channels[:-1]] + [64]
-            else:
-                self.encoder_channels = self.encoder_channels[:-1] + [64]
+            self.encoder_channels = self.encoder_channels[:-1] + [self.bottleneck_channels]
+            
         else: 
             self.estimated_depth = None
 
