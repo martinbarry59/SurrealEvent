@@ -1,143 +1,133 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from .EventSurrealLayers import ConvLSTM
-from torch.nn import LSTM
+from .EventSurrealLayers import ConvLSTMCell
 from utils.functions import eventstovoxel
 
-class EventEncoder(nn.Module):
-    """Lightweight encoder specifically designed for event data"""
+class ResidualBlock(nn.Module):
+    """Simple residual block with optional downsampling"""
+    def __init__(self, in_channels, out_channels, stride=1):
+        super().__init__()
+        
+        self.conv1 = nn.Conv2d(in_channels, out_channels, 3, stride=stride, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, 3, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+        
+        # Shortcut connection
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_channels != out_channels:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, 1, stride=stride, bias=False),
+                nn.BatchNorm2d(out_channels)
+            )
+            
+    def forward(self, x):
+        identity = self.shortcut(x)
+        
+        out = F.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        
+        out += identity  # Residual connection
+        out = F.relu(out)
+        
+        return out
+
+class FastEncoder(nn.Module):
+    """Fast encoder with residual connections and skip features"""
     def __init__(self, input_channels=5):
         super().__init__()
         
-        # Much smaller channel progression for sparse event data
-        self.encoder_channels = [16, 32, 64, 128, 256]
+        # Initial conv
+        self.conv1 = nn.Conv2d(input_channels, 32, 3, stride=2, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(32)
         
-        # Depthwise separable convolutions for efficiency
-        self.conv1 = self._make_depthwise_block(input_channels, 16, stride=1)
-        self.conv2 = self._make_depthwise_block(16, 32, stride=2)
-        self.conv3 = self._make_depthwise_block(32, 64, stride=2)
-        self.conv4 = self._make_depthwise_block(64, 128, stride=2)
-        self.conv5 = self._make_depthwise_block(128, 256, stride=2)
+        # Residual blocks with downsampling
+        self.layer1 = ResidualBlock(32, 64, stride=2)    # 173x130 -> 87x65
+        self.layer2 = ResidualBlock(64, 128, stride=2)   # 87x65 -> 44x33
+        self.layer3 = ResidualBlock(128, 256, stride=2)  # 44x33 -> 22x17
         
-        # Lightweight attention for event features
-        self.channel_attention = nn.ModuleList([
-            ChannelAttention(ch) for ch in self.encoder_channels
-        ])
-        
-    def _make_depthwise_block(self, in_ch, out_ch, stride=1):
-        return nn.Sequential(
-            # Depthwise convolution
-            nn.Conv2d(in_ch, in_ch, 3, stride=stride, padding=1, groups=in_ch),
-            nn.BatchNorm2d(in_ch),
-            nn.GELU(),  # Better for sparse data than ReLU
-            # Pointwise convolution
-            nn.Conv2d(in_ch, out_ch, 1),
-            nn.BatchNorm2d(out_ch),
-            nn.GELU()
-        )
-    
-    def forward(self, x):
-        features = []
-        
-        x1 = self.conv1(x)
-        x1 = self.channel_attention[0](x1)
-        features.append(x1)
-        
-        x2 = self.conv2(x1)
-        x2 = self.channel_attention[1](x2)
-        features.append(x2)
-        
-        x3 = self.conv3(x2)
-        x3 = self.channel_attention[2](x3)
-        features.append(x3)
-        
-        x4 = self.conv4(x3)
-        x4 = self.channel_attention[3](x4)
-        features.append(x4)
-        
-        x5 = self.conv5(x4)
-        x5 = self.channel_attention[4](x5)
-        
-        return x5, features
-
-class ChannelAttention(nn.Module):
-    """Lightweight channel attention for sparse event features"""
-    def __init__(self, channels, reduction=8):
-        super().__init__()
-        self.avg_pool = nn.AdaptiveAvgPool2d(1)
-        self.fc = nn.Sequential(
-            nn.Conv2d(channels, max(channels // reduction, 1), 1, bias=False),
-            nn.GELU(),
-            nn.Conv2d(max(channels // reduction, 1), channels, 1, bias=False),
-            nn.Sigmoid()
-        )
-    
-    def forward(self, x):
-        w = self.avg_pool(x)
-        w = self.fc(w)
-        return x * w
-
-class EventNormalization(nn.Module):
-    """Specialized normalization for event data"""
-    def __init__(self, epsilon=1e-8):
-        super().__init__()
-        self.epsilon = epsilon
+        # Additional residual blocks at same resolution for depth
+        self.layer4 = ResidualBlock(256, 256, stride=1)  # 22x17 -> 22x17
         
     def forward(self, x):
-        # Compute sparsity mask
-        mask = (x.abs().sum(dim=1, keepdim=True) > self.epsilon).float()
+        # Collect skip features at different resolutions like original ConvLSTM
+        feats = []
         
-        # Normalize only non-zero regions
-        mean = x.sum(dim=[2, 3], keepdim=True) / (mask.sum(dim=[2, 3], keepdim=True) + self.epsilon)
-        var = ((x - mean) ** 2 * mask).sum(dim=[2, 3], keepdim=True) / (mask.sum(dim=[2, 3], keepdim=True) + self.epsilon)
+        x = F.relu(self.bn1(self.conv1(x)))  # 346x260 -> 173x130
+        feats.append(x)  # Skip feature 1: [B, 32, 173, 130]
         
-        return (x - mean) / (var.sqrt() + self.epsilon) * mask
+        x = self.layer1(x)  # -> 87x65
+        feats.append(x)  # Skip feature 2: [B, 64, 87, 65]
+        
+        x = self.layer2(x)  # -> 44x33
+        feats.append(x)  # Skip feature 3: [B, 128, 44, 33]
+        
+        x = self.layer3(x)  # -> 22x17
+        feats.append(x)  # Skip feature 4: [B, 256, 22, 17]
+        
+        x = self.layer4(x)  # -> 22x17 (same size, more depth)
+        
+        return x, feats  # Return both bottleneck and skip features
 
-class EfficientDecoder(nn.Module):
-    """Efficient decoder for event data"""
-    def __init__(self, encoder_channels, method="add"):
+class FastDecoder(nn.Module):
+    """Fast decoder with skip connections like the original ConvLSTM"""
+    def __init__(self, input_channels=128, encoder_channels=[32, 64, 128, 256], method="add"):
         super().__init__()
         self.method = method
         
-        # Reverse the channel list for upsampling
-        channels = encoder_channels[::-1]
+        # Upsampling layers that will use skip connections
+        self.up_layers = nn.ModuleList()
         
-        self.decoder_layers = nn.ModuleList()
+        # From 22x17 to 44x33 (will skip with 128 channels)
+        self.up_layers.append(self._make_up_layer(input_channels, 128))
         
-        for i in range(len(channels)-1):
-            in_ch = channels[i]
-            skip_ch = channels[i+1]
+        # From 44x33 to 87x65 (will skip with 64 channels) 
+        if method == "concatenate":
+            self.up_layers.append(self._make_up_layer(128 + 128, 64))  # 128 from up + 128 from skip
+        else:
+            self.up_layers.append(self._make_up_layer(128, 64))
+        
+        # From 87x65 to 173x130 (will skip with 32 channels)
+        if method == "concatenate":
+            self.up_layers.append(self._make_up_layer(64 + 64, 32))  # 64 from up + 64 from skip
+        else:
+            self.up_layers.append(self._make_up_layer(64, 32))
+        
+        # Final upsampling to full resolution
+        if method == "concatenate":
+            final_in_ch = 32 + 32  # 32 from up + 32 from skip
+        else:
+            final_in_ch = 32
             
-            if method == "concatenate":
-                # Account for concatenation
-                conv_in_ch = in_ch + skip_ch
-            else:
-                conv_in_ch = in_ch
-                
-            self.decoder_layers.append(
-                nn.Sequential(
-                    nn.ConvTranspose2d(in_ch, skip_ch, kernel_size=2, stride=2),
-                    nn.BatchNorm2d(skip_ch),
-                    nn.GELU(),
-                    nn.Conv2d(conv_in_ch if method == "concatenate" else skip_ch, 
-                             skip_ch, kernel_size=3, padding=1),
-                    nn.BatchNorm2d(skip_ch),
-                    nn.GELU()
-                )
-            )
+        self.final_up = nn.ConvTranspose2d(final_in_ch, 16, 4, stride=2, padding=1)
+        self.final_conv = nn.Sequential(
+            nn.Conv2d(16, 8, 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(8, 1, 1),
+            nn.Sigmoid()
+        )
         
-    def forward(self, x, features):
-        # features are in forward order, we need them in reverse
-        skip_features = features[::-1][1:]  # Exclude the bottleneck
+    def _make_up_layer(self, in_channels, out_channels):
+        return nn.Sequential(
+            nn.ConvTranspose2d(in_channels, out_channels, 4, stride=2, padding=1),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(out_channels, out_channels, 3, padding=1),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True)
+        )
         
-        for i, (layer, skip_feat) in enumerate(zip(self.decoder_layers, skip_features)):
-            # Upsample
-            x = layer[0](x)  # ConvTranspose2d
-            x = layer[1](x)  # BatchNorm2d
-            x = layer[2](x)  # GELU
+    def forward(self, x, skip_feats):
+        # skip_feats order: [32ch@173x130, 64ch@87x65, 128ch@44x33, 256ch@22x17]
+        # We need them in reverse order for upsampling (skip the last one which is same as bottleneck)
+        skip_feats_for_decoder = skip_feats[::-1][1:]  # [128ch@44x33, 64ch@87x65, 32ch@173x130]
+        
+        # Upsample with skip connections
+        for i, (up_layer, skip_feat) in enumerate(zip(self.up_layers, skip_feats_for_decoder)):
+            x = up_layer[:3](x)  # ConvTranspose + BN + ReLU
             
-            # Adjust size to match skip connection
+            # Adjust size to match skip feature
             if x.shape[-2:] != skip_feat.shape[-2:]:
                 x = F.interpolate(x, size=skip_feat.shape[-2:], mode='bilinear', align_corners=False)
             
@@ -145,224 +135,107 @@ class EfficientDecoder(nn.Module):
             if self.method == "concatenate":
                 x = torch.cat([x, skip_feat], dim=1)
             else:
-                x = x + skip_feat
+                x = x + skip_feat  # Element-wise addition (residual-style)
                 
-            # Final conv layers
-            x = layer[3](x)  # Conv2d
-            x = layer[4](x)  # BatchNorm2d
-            x = layer[5](x)  # GELU
-            
-        return x
+            x = up_layer[3:](x)  # Final conv + BN + ReLU
+        
+        # Final upsampling to target resolution
+        x = self.final_up(x)  # 173x130 -> 346x260
+        x = self.final_conv(x)
+        
+        # Ensure exact output size
+        return F.interpolate(x, size=(260, 346), mode='bilinear', align_corners=False)
 
 class EfficientConvLSTM(nn.Module):
-    def __init__(self, model_type="CONVLSTM", width=346, height=260, skip_lstm=True):
+    """Fast model with skip connections like original ConvLSTM"""
+    def __init__(self, model_type="FASTLSTM", width=346, height=260, skip_connections=True, method="add"):
         super().__init__()
         self.width = width
         self.height = height
         self.model_type = model_type
-        self.skip_lstm = skip_lstm 
-        self.method = "add"
+        self.skip_connections = skip_connections
+        self.method = method
         
-        # Event-specific preprocessing
-        self.event_norm = EventNormalization()
+        # Encoder with skip features
+        self.encoder = FastEncoder(5)
         
-        # Lightweight event encoder
-        self.encoder = EventEncoder(5)
-        self.encoder_channels = [16, 32, 64, 128, 256]
+        # Single LSTM at bottleneck (22x17 resolution)
+        self.lstm_cell = ConvLSTMCell(256, 128, kernel_size=3)
+        self.hidden_state = None
         
-        # Adjust bottleneck accordingly
-        self.mheight = 9
-        self.mwidth = 11
-        self.bottleneck_channels = 64  # Reduced from 128
+        # Decoder with skip connections
+        self.decoder = FastDecoder(128, encoder_channels=[32, 64, 128, 256], method=method)
         
-        # Add gradient monitoring
-        self.gradient_clip_val = 1.0
-        
-        if "LSTM" in self.model_type:
-            if self.skip_lstm:
-                self.skip_convlstms = nn.ModuleList([
-                    ConvLSTM(
-                        input_dim=ch,
-                        hidden_dims=[ch//2],  # Reduce hidden dims to prevent overfitting
-                        kernel_size=3,
-                        num_layers=1
-                    ) for ch in self.encoder_channels[:-1]
-                ])
-                
-            if "DENSELSTM" in self.model_type:
-                self.dense_lstm = LSTM(
-                    input_size=self.encoder_channels[-1]*self.mheight*self.mwidth,
-                    hidden_size=64,  # Reduced from 128
-                    num_layers=2,
-                    batch_first=True,
-                    dropout=0.1
-                )
-                self.fc_to_map = nn.Linear(64, self.bottleneck_channels * self.mheight * self.mwidth)
-                self.dense_state = None
-                
-            elif "CONVLSTM" in self.model_type:
-                self.convlstm = ConvLSTM(
-                    input_dim=self.encoder_channels[-1],
-                    hidden_dims=[64, 64],  # Reduced from [128, 128]
-                    kernel_size=3,
-                    num_layers=2
-                )
-                
-            # Update encoder channels for skip connections
-            if self.skip_lstm:
-                self.encoder_channels = [ch//2 for ch in self.encoder_channels[:-1]] + [64]
-            else:
-                self.encoder_channels = self.encoder_channels[:-1] + [64]
-        else: 
-            self.estimated_depth = None
-
-        # Efficient decoder
-        self.decoder = EfficientDecoder(self.encoder_channels, self.method)
-        
-        # Final output layers with better initialization
-        self.final_conv = nn.Sequential(
-            nn.Conv2d(self.encoder_channels[0], 32, kernel_size=3, padding=1),
-            nn.BatchNorm2d(32),
-            nn.GELU(),
-            nn.Conv2d(32, 1, kernel_size=1),
-            nn.Sigmoid()
-        )
-
         self._initialize_weights()
-    
+        
     def _initialize_weights(self):
-        """Initialize weights to avoid gradient collapse"""
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
-            elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
+            elif isinstance(m, nn.BatchNorm2d):
                 nn.init.ones_(m.weight)
                 nn.init.zeros_(m.bias)
-            elif isinstance(m, nn.Linear):
-                nn.init.kaiming_normal_(m.weight)
-                if m.bias is not None:
-                    nn.init.zeros_(m.bias)
-                    
-        # Special initialization for final conv to prevent sigmoid saturation
-        final_conv = self.final_conv[-2]  # The last Conv2d before Sigmoid
-        nn.init.normal_(final_conv.weight, mean=0.0, std=0.01)
-        if final_conv.bias is not None:
-            nn.init.constant_(final_conv.bias, -1.0)  # Slight negative bias
-            
+                
     def reset_states(self):
-        if "DENSELSTM" in self.model_type:
-            self.dense_state = None
-        elif "CONVLSTM" in self.model_type:
-            self.convlstm.reset_hidden()
-        if "LSTM" in self.model_type and self.skip_lstm:
-            for skip_lstm in self.skip_convlstms:
-                skip_lstm.reset_hidden()
-        else:
-            self.estimated_depth = None
-            
+        self.hidden_state = None
+        
     def detach_states(self):
-        if "LSTM" in self.model_type:
-            if "DENSELSTM" in self.model_type:
-                if self.dense_state is not None:
-                    h, c = self.dense_state
-                    self.dense_state = (h.detach(), c.detach())
-            elif "CONVLSTM" in self.model_type:
-                self.convlstm.detach_hidden()
-            if self.skip_lstm:
-                for skip_lstm in self.skip_convlstms:
-                    skip_lstm.detach_hidden()
-        else:
-            if self.estimated_depth is not None:
-                self.estimated_depth = self.estimated_depth.detach()
+        if self.hidden_state is not None:
+            h, c = self.hidden_state
+            self.hidden_state = (h.detach(), c.detach())
 
     def forward(self, event_sequence, training=False, hotpixel=False):
-        lstm_inputs = []
-        timed_features = [[] for _ in range(len(self.encoder_channels))]
-        seq_events = []
+        B = event_sequence[0].shape[0]
+        outputs = []
+        all_skip_feats = []  # Store skip features for each timestep
         
         for events in event_sequence:
-            # Normalize event coordinates
+            # Simple time normalization (vectorized)
             with torch.no_grad():
                 if events.shape[-1] == 4:
-                    min_t = torch.min(events[:, :, 0], dim=1, keepdim=True)[0]
-                    max_t = torch.max(events[:, :, 0], dim=1, keepdim=True)[0]
-                    denom = (max_t - min_t)
-                    denom[denom < 1e-8] = 1.0
+                    # Fast normalization
+                    min_t = events[:, :, 0].min(dim=1, keepdim=True)[0]
+                    max_t = events[:, :, 0].max(dim=1, keepdim=True)[0]
+                    denom = max_t - min_t + 1e-8
                     events[:, :, 0] = (events[:, :, 0] - min_t) / denom
                     events[:, :, 1] = events[:, :, 1].clamp(0, self.width-1)
                     events[:, :, 2] = events[:, :, 2].clamp(0, self.height-1)
-
+                    
+                    # Convert to voxels
                     hist_events = eventstovoxel(events, self.height, self.width, 
                                               training=training, hotpixel=hotpixel).float()
-                    seq_events.append(hist_events)
                 else:
                     hist_events = events
-
-            # Apply event normalization
-            hist_events = self.event_norm(hist_events)
             
-            # Encode with lightweight encoder
-            CNN_encoder, feats = self.encoder(hist_events)
-            for i, f in enumerate(feats):
-                timed_features[i].append(f)
+            # Encode with skip features
+            features, skip_feats = self.encoder(hist_events)  # [B, 256, 22, 17], skip_feats
+            all_skip_feats.append(skip_feats)
             
-            # Prepare for LSTM
-            interpolated = F.interpolate(CNN_encoder, size=(self.mheight, self.mwidth), 
-                                       mode='bilinear', align_corners=False)
-            lstm_inputs.append(interpolated)
+            # Initialize hidden state if needed
+            if self.hidden_state is None:
+                _, _, H, W = features.shape
+                self.hidden_state = (
+                    torch.zeros(B, 128, H, W, device=features.device),
+                    torch.zeros(B, 128, H, W, device=features.device)
+                )
             
-        lstm_inputs = torch.stack(lstm_inputs, dim=1)
-        
-        # Apply skip LSTMs if enabled
-        skip_outputs = []
-        if self.skip_lstm:
-            for i, skip_lstm in enumerate(self.skip_convlstms):
-                skip_feats = torch.stack(timed_features[i], dim=1)
-                skip_out = skip_lstm(skip_feats)
-                skip_outputs.append(skip_out)
-         
-        B, T, Cb, Hb, Wb = lstm_inputs.shape
-        
-        # # Monitor for gradient issues
-        # if self.training and torch.rand(1) < 0.1:
-        #     print(f"LSTM input stats - Mean: {lstm_inputs.mean():.6f}, Std: {lstm_inputs.std():.6f}")
-        #     print(f"LSTM input range - Min: {lstm_inputs.min():.6f}, Max: {lstm_inputs.max():.6f}")
-        
-        # Apply main LSTM
-        if "DENSELSTM" in self.model_type:
-            x_seq = lstm_inputs.flatten(2)
-            if self.dense_state is None:
-                enc_seq, self.dense_state = self.dense_lstm(x_seq)
+            # Apply LSTM
+            h_new, c_new = self.lstm_cell(features, self.hidden_state)
+            self.hidden_state = (h_new, c_new)
+            
+            # Decode with skip connections
+            if self.skip_connections:
+                output = self.decoder(h_new, skip_feats)  # [B, 1, 260, 346]
             else:
-                enc_seq, self.dense_state = self.dense_lstm(x_seq, self.dense_state)
-            
-            enc_flat = self.fc_to_map(enc_seq.reshape(B * T, -1))
-            encodings = enc_flat.view(B, T, self.bottleneck_channels, self.mheight, self.mwidth)
-            
-        elif "CONVLSTM" in self.model_type:
-            encodings = self.convlstm(lstm_inputs)
+                output = self.decoder(h_new, [])  # No skip connections
+            outputs.append(output)
         
-        # Monitor encoding collapse
-        # if self.training and torch.rand(1) < 0.1:
-        #     print(f"Encoding stats - Mean: {encodings.mean():.6f}, Std: {encodings.std():.6f}")
-        #     print(f"Encoding range - Min: {encodings.min():.6f}, Max: {encodings.max():.6f}")
-        #     zero_ratio = (encodings.abs() < 1e-6).float().mean()
-        #     print(f"Zero ratio: {zero_ratio:.3f}")
-        #     if zero_ratio > 0.9:
-        #         print("WARNING: Encodings are collapsing to zero!")
+        # Stack outputs
+        outputs = torch.cat(outputs, dim=1)  # [B, T, 260, 346]
         
-        # Decode to full resolution
-        outputs = []
-        for t in range(T):
-            if self.skip_lstm:
-                skip_feats_t = [skip_outputs[i][:, t] for i in range(len(skip_outputs))]
-            else:
-                skip_feats_t = [timed_features[i][t] for i in range(len(timed_features))]
-                
-            x = self.decoder(encodings[:, t], skip_feats_t)
-            outputs.append(self.final_conv(x))
-
-        outputs = torch.cat(outputs, dim=1)
-        return outputs, encodings.detach(), seq_events
+        # Return dummy encodings for compatibility
+        dummy_encodings = h_new.unsqueeze(1).repeat(1, len(event_sequence), 1, 1, 1)
+        
+        return outputs, dummy_encodings.detach(), event_sequence
