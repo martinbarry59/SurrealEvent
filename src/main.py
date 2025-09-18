@@ -63,7 +63,7 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
 
 def main():
     batch_train = 40
-    batch_test = 100
+    batch_test = 80
 
     network = "CONVLSTM" # LSTM, Transformer, BOBWFF, BOBWLSTM
     # network = "EventSegFast" # LSTM, Transformer, BOBWFF, BOBWLSTM

@@ -173,10 +173,12 @@ def CNN_collate(batch):
     event_frames = event_frames.permute(1, 0, 2, 3, 4)
     event_frames, depths = apply_augmentations(event_frames, depths)
     return [event_frames, depths]
-def get_data(data, t):
+def get_data(data, t, step_size=1):
     if len(data) == 2:
         events_videos, depths = data
-        return events_videos[t], depths[t]
+        min_index = min(0, t-step_size)
+        events_videos = events_videos[min_index:t].view(-1, events_videos.shape[2], events_videos.shape[3])
+        return events_videos, depths[min_index:t]
 if __name__ == "__main__":
     data_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../dataset/")
     train_dataset = EventDepthDataset(data_path)
