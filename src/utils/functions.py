@@ -692,8 +692,9 @@ def eventstovoxel(events, height=260, width=346, bins=5, training=True, hotpixel
     x = (events[:, :, 1]).long().clamp(0, width - 1)
     y = (events[:, :, 2]).long().clamp(0, height - 1)
     t = (events[:, :, 0] * bins).long().clamp(0, bins - 1)
-    p = events[:, :, 3].long()
     
+    p = events[:, :, 3].long()
+   
     # Final channel index: [B, N]
     c = t
     voxel = torch.zeros(B, bins, height, width, device=device)

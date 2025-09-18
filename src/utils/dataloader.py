@@ -84,9 +84,10 @@ class EventDepthDataset(Dataset):
         N = 50000
         t_events = torch.zeros((depth.shape[0], N, 4), requires_grad=False)
         for t in range(depth.shape[0]):
-              # [1, 4]
-            t_start = max((t - 4) * step, 0)
-            nevents = events[ ( t_start <= events[:, 0]) * (events[:, 0] < (t + 1) * step)].unsqueeze(0)
+            t_start = (t) * step
+            times = events[:, 0]
+            nevents = events[ (times > t_start) * (times < (t + 1) * step)].unsqueeze(0)
+
             if nevents.shape[1] > N:
                 nevents = nevents[:, :N, :]
             t_events[t, :nevents.shape[1]] = nevents
@@ -173,10 +174,23 @@ def CNN_collate(batch):
     event_frames = event_frames.permute(1, 0, 2, 3, 4)
     event_frames, depths = apply_augmentations(event_frames, depths)
     return [event_frames, depths]
-def get_data(data, t):
+def get_data(data, t, step_size=1):
     if len(data) == 2:
+        output_events = torch.zeros((data[0].shape[0], 50000, 4), requires_grad=False)
         events_videos, depths = data
-        return events_videos[t], depths[t]
+        min_index = max(0, t-step_size+1)
+        events_videos = events_videos[min_index:t+1].permute((1,0,2,3))  # [B, T, N, 4]
+        ## merge all times and N together
+        events_videos = events_videos.reshape((events_videos.shape[0], -1, 4))
+        ## shuffle and take first N
+        for b in range(events_videos.shape[0]):
+            non_zero_mask = events_videos[b,:,3] != 0
+            N_events = non_zero_mask.sum().item()
+            
+            permuted_events = events_videos[b, non_zero_mask][torch.randperm(N_events)]
+            output_events[b, :min(N_events, 50000)] = permuted_events[:50000]
+        return events_videos, depths[t]
+        
 if __name__ == "__main__":
     data_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../dataset/")
     train_dataset = EventDepthDataset(data_path)

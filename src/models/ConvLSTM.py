@@ -118,7 +118,7 @@ class EConvlstm(nn.Module):
         print(f"  Min x: {events[:, :, 1].min().item()}, Max x: {events[:, :, 1].max().item()}, Mean x: {events[:, :, 1].mean().item()}, Std x: {events[:, :, 1].std().item()}")
         print(f"  Min y: {events[:, :, 2].min().item()}, Max y: {events[:, :, 2].max().item()}, Mean y: {events[:, :, 2].mean().item()}, Std y: {events[:, :, 2].std().item()}")
         print(f"  Min p: {events[:, :, 3].min().item()}, Max p: {events[:, :, 3].max().item()}, Mean p: {events[:, :, 3].mean().item()}, Std p: {events[:, :, 3].std().item()}")
-        for hist in hist_events:
+        for hist in hist_events[0]:
             print(f"  Histogram shape: {hist.shape}, Min: {hist.min().item()}, Max: {hist.max().item()}")
             print(f"  Histogram mean: {hist.mean().item()}, std: {hist.std().item()}")
 
@@ -132,9 +132,12 @@ class EConvlstm(nn.Module):
             # normalise t per batch
             with torch.no_grad():
                 if events.shape[-1] == 4:
-                    
-                    min_t = torch.min(events[:, :, 0], dim=1, keepdim=True)[0]
-                    max_t = torch.max(events[:, :, 0], dim=1, keepdim=True)[0]
+                    times = events[:, :, 0]
+                    ### only keep times where polarity events[:, :, 3] != 0
+                    non_zero_mask = events[:, :, 3] != 0
+                    non_zero_events = times[non_zero_mask]
+                    min_t = torch.min(non_zero_events)
+                    max_t = torch.max(non_zero_events)
                     denom = (max_t - min_t)
                     # Avoid division by zero, but only where denom is zero
                     # print(f"Target time range: [{events[:, :, 0].min():.3f}, {events[:, :, 0].max():.3f}]")
@@ -142,11 +145,18 @@ class EConvlstm(nn.Module):
                     # print(f"Target y range: [{events[:, :, 2].min():.3f}, {events[:, :, 2].max():.3f}]")
                     # print(f"Target polarity range: [{events[:, :, 3].min():.3f}, {events[:, :, 3].max():.3f}]")
                     denom[denom < 1e-8] = 1.0  # If all times are the same, set denom to 1 to avoid NaN
-                    events[:, :, 0] = (events[:, :, 0] - min_t) / denom
+                    events[:, :, 0] = ((events[:, :, 0] - min_t) / denom).clamp(0, 1)
+                    # print("After normalization:")
+                    # non_zero_events = events[:, :, 0][non_zero_mask]
+                    # print(non_zero_events, f"min: {non_zero_events.min().item()}, max: {non_zero_events.max().item()}, mean: {non_zero_events.mean().item()}, std: {non_zero_events.std().item()}")
                     events[:,:, 1] = events[:, :, 1].clamp(0, self.width-1)
                     events[:,:, 2] = events[:, :, 2].clamp(0, self.height-1)
-
                     hist_events = eventstovoxel(events, self.height, self.width, training=training, hotpixel=hotpixel).float()
+                    binary = hist_events.clone()
+                    binary[binary != 0] = 1.0
+
+                   
+                    # self.print_statistics(hist_events, events)
                     seq_events.append(hist_events)
                 else:
                     hist_events = events
@@ -169,7 +179,7 @@ class EConvlstm(nn.Module):
                 skip_outputs.append(skip_out.clone())
          
         B, T, Cb, Hb, Wb = lstm_inputs.shape
-        print(f"data statistics mean: {lstm_inputs.mean().item()}, std: {lstm_inputs.std()},  min: {lstm_inputs.min().item()}, max: {lstm_inputs.max().item()}")
+        # print(f"data statistics mean: {lstm_inputs.mean().item()}, std: {lstm_inputs.std()},  min: {lstm_inputs.min().item()}, max: {lstm_inputs.max().item()}")
         if "DENSELSTM" in self.model_type:
         # 
         # Dense LSTM at the lowest layer
