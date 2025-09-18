@@ -191,6 +191,7 @@ def get_data(data, t, step_size=1):
             output_events[b, :min(N_events, 50000)] = permuted_events[:50000]
         return events_videos, depths[t]
         
+
 if __name__ == "__main__":
     data_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../dataset/")
     train_dataset = EventDepthDataset(data_path)

@@ -67,8 +67,8 @@ def forward_feed(model, data, device, train, step_size=1, start_seq=0, block_upd
     seq_depths = []
     seq_labels = []
     max_t = start_seq + block_update * step_size if block_update > 0 else len(data[0]) - 1
-    for t in range(start_seq, max_t, step_size): 
-        print(t)
+
+    for t in range(start_seq, max_t, step_size):  
         datat = get_data(data, t, step_size) if not zeroing else get_data(data, start_seq, step_size)
         events, depth = datat[:2]
         ## add white noise (-1 or 1 ) with 10% probability
@@ -120,13 +120,13 @@ def compute_mixed_loss(predictions, depths, criterion, epoch):
         loss += criterion(pred_lpips, enc_lpips).mean()
         # if epoch > 0:
         loss += min(1, epoch) * compute_edge_loss(pred[:,0:1], enc[:,0:1])
-        # if t > 0:
-        #     mse = torch.nn.MSELoss()(depths[:,t], depths[:,t-1])
-        #     loss_est = torch.exp(torch.clamp(-50 * mse, min=-10, max=10))
-        #     loss_t = F.l1_loss(predictions[:,t], predictions[:,t-1])
-        #     TC_loss = loss_t * loss_est
+        if t > 0:
+            mse = torch.nn.MSELoss()(depths[:,t], depths[:,t-1])
+            loss_est = torch.exp(torch.clamp(-50 * mse, min=-10, max=10))
+            loss_t = F.l1_loss(predictions[:,t], predictions[:,t-1])
+            TC_loss = loss_t * loss_est
             
-        #     loss += 1 * min(1, max(0, (epoch)/3) * TC_loss)
+            loss += 1 * min(1, max(0, (epoch)/3) * TC_loss)
     return loss / predictions.shape[1]
 
 
@@ -158,8 +158,9 @@ def sequence_for_LSTM(data, model, criterion, optimizer, device,
     # print(f"Starting training from {t_start} for {N_update} updates with block size {block_update} and step size {step_size}")
     optimizer.zero_grad()
     zero_run = True if 0.1 > random.random() else False
-    hotpixel = False#True if torch.rand(1).item() < 0.9 else False
-    config = random.choice([None, 'minimal', 'nighttime']) if train else 'minimal'
+
+    hotpixel = False #True if torch.rand(1).item() < 0.9 else False
+    # config = random.choice([None, 'minimal', 'nighttime']) if train else 'minimal'
     # noise_gen = create_persistent_noise_generator_with_augmentations(width=346, height=260, device=device, config_type=config, training=True, seed=None)
     # noise_gen.reset()  # per video
     for n in range(N_update):
