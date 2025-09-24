@@ -136,23 +136,26 @@ class EConvlstm(nn.Module):
                     ### only keep times where polarity events[:, :, 3] != 0
                     non_zero_mask = events[:, :, 3] != 0
                     non_zero_events = times[non_zero_mask]
-                    min_t = torch.min(non_zero_events)
-                    max_t = torch.max(non_zero_events)
-                    denom = (max_t - min_t)
-                    # Avoid division by zero, but only where denom is zero
-                    # print(f"Target time range: [{events[:, :, 0].min():.3f}, {events[:, :, 0].max():.3f}]")
-                    # print(f"Target x range: [{events[:, :, 1].min():.3f}, {events[:, :, 1].max():.3f}]")
-                    # print(f"Target y range: [{events[:, :, 2].min():.3f}, {events[:, :, 2].max():.3f}]")
-                    # print(f"Target polarity range: [{events[:, :, 3].min():.3f}, {events[:, :, 3].max():.3f}]")
-                    denom[denom < 1e-8] = 1.0  # If all times are the same, set denom to 1 to avoid NaN
-                    events[:, :, 0] = ((events[:, :, 0] - min_t) / denom).clamp(0, 1)
-                    # print("After normalization:")
-                    # non_zero_events = events[:, :, 0][non_zero_mask]
-                    # print(non_zero_events, f"min: {non_zero_events.min().item()}, max: {non_zero_events.max().item()}, mean: {non_zero_events.mean().item()}, std: {non_zero_events.std().item()}")
-                    events[:,:, 1] = events[:, :, 1].clamp(0, self.width-1)
-                    events[:,:, 2] = events[:, :, 2].clamp(0, self.height-1)
-                    hist_events = eventstovoxel(events, self.height, self.width, training=training, hotpixel=hotpixel).float()
-
+                    if non_zero_events.numel() != 0:
+                        min_t = torch.min(non_zero_events)
+                        max_t = torch.max(non_zero_events)
+                        denom = (max_t - min_t)
+                        # Avoid division by zero, but only where denom is zero
+                        # print(f"Target time range: [{events[:, :, 0].min():.3f}, {events[:, :, 0].max():.3f}]")
+                        # print(f"Target x range: [{events[:, :, 1].min():.3f}, {events[:, :, 1].max():.3f}]")
+                        # print(f"Target y range: [{events[:, :, 2].min():.3f}, {events[:, :, 2].max():.3f}]")
+                        # print(f"Target polarity range: [{events[:, :, 3].min():.3f}, {events[:, :, 3].max():.3f}]")
+                        denom[denom < 1e-8] = 1.0  # If all times are the same, set denom to 1 to avoid NaN
+                        events[:, :, 0] = ((events[:, :, 0] - min_t) / denom).clamp(0, 1)
+                        # print("After normalization:")
+                        # non_zero_events = events[:, :, 0][non_zero_mask]
+                        # print(non_zero_events, f"min: {non_zero_events.min().item()}, max: {non_zero_events.max().item()}, mean: {non_zero_events.mean().item()}, std: {non_zero_events.std().item()}")
+                        events[:,:, 1] = events[:, :, 1].clamp(0, self.width-1)
+                        events[:,:, 2] = events[:, :, 2].clamp(0, self.height-1)
+                        hist_events = eventstovoxel(events, self.height, self.width, training=training, hotpixel=hotpixel).float()
+                    else:
+                        hist_events = torch.zeros((events.shape[0], 5, self.height, self.width), device=events.device)
+                        
                     seq_events.append(hist_events)
                 else:
                     hist_events = events

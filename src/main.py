@@ -33,9 +33,9 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
             writer_path = f'{save_path}/{tqdm_str}_EPOCH_{epoch}_video_{batch_step}.mp4' if save_path else None
             if save_path and not os.path.exists(writer_path):
                 os.makedirs(os.path.dirname(writer_path), exist_ok=True)
-            video_writer = cv2.VideoWriter(writer_path, fourcc, 30, (3*346,260)) if (not train or batch_step % 1 == 0 and save_path) else None
+            video_writer = cv2.VideoWriter(writer_path, fourcc, 30, (3*346,260)) if (batch_step % 100 == 0 and save_path) else None
             # with torch.amp.autocast(device_type=device.type):
-            loss_avg, loss_MSE, loss_SSIM, step_size, zero_run = sequence_for_LSTM(data, model, criterion, optimizer, device, train, epoch, scaler, video_writer=video_writer, block_update=10)
+            loss_avg, loss_MSE, loss_SSIM, step_size, zero_run = sequence_for_LSTM(data, model, criterion, optimizer, device, train, epoch, scaler, video_writer=video_writer)
 
             batch_loss = sum(loss_avg)/len(loss_avg)
             epoch_loss.append(batch_loss)
@@ -55,7 +55,7 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
             save_string = f'{checkpoint_path}/model_epoch_{epoch}_{model.model_type}'
 
             torch.save(model.state_dict(), f'{save_string}_tmp.pth') if video_writer else None
-            
+        torch.save(model.state_dict(), f'{save_string}.pth')
         batch_tqdm.close()
     if len(loss_MSE) > 0:
         print(f"Epoch {epoch}, Loss: {sum(epoch_loss)/len(epoch_loss)}, MSE: {sum(loss_MSE)/len(loss_MSE)}, SSIM: {sum(loss_SSIM)/len(loss_SSIM)}")
@@ -69,12 +69,15 @@ def main():
     network = "CONVLSTM" # LSTM, Transformer, BOBWFF, BOBWLSTM
     # network = "EventSegFast" # LSTM, Transformer, BOBWFF, BOBWLSTM
     ## set seed for reproducibility
-    torch.manual_seed(42)
-    torch.cuda.manual_seed(42)
+    # torch.manual_seed(42)
+    # torch.cuda.manual_seed(42)
     train_dataset = EventDepthDataset(data_path+"/train/", tsne=True)
+    # train_dataset.test_corruption()
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_train, shuffle=True, collate_fn=Transformer_collate)
     test_dataset = EventDepthDataset(data_path+"/test/", tsne=True)
+    # test_dataset.test_corruption()
     test_loader = torch.utils.data.DataLoader(test_dataset, batch_size= batch_test, shuffle=False, collate_fn=Transformer_collate)
+    
     epoch_checkpoint = 0
     save_path = f"{results_path}/{network}"
     checkpoint_file = None
@@ -106,7 +109,7 @@ def main():
     # criterion = torch.nn.SmoothL1Loss()
     criterion = lpips.LPIPS(net='alex')
     criterion.to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)
 
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10, eta_min=1e-7)  # 10 = total number of epochs
     test_only = False
@@ -116,24 +119,16 @@ def main():
         if epoch >= epoch_checkpoint:
             scaler = torch.amp.GradScaler(device=device)   
             if not test_only:
-                train_loss = evaluation(model, train_loader, optimizer, epoch, criterion, train=True, save_path=save_path, scaler=scaler)
-
-                test_loss = evaluation(model, test_loader, optimizer, epoch, criterion= criterion, train=False, save_path=save_path , scaler=scaler)
-
-
-
-
                 save_string = f'{checkpoint_path}/model_epoch_{epoch}_{model.model_type}'
                 if checkpoint_file is not None and "small" in checkpoint_file:
                     save_string += "_small"
-                if test_loss < min_loss and not test_only:
-                    min_loss = test_loss
-
-                    torch.save(model.state_dict(), f'{save_string}_best.pth')
-                torch.save(model.state_dict(), f'{save_string}.pth')
-
-
-                print(f"Epoch {epoch}, Train Loss: {train_loss:.4f}, Test Loss: {test_loss:.4f}")
+                train_loss = evaluation(model, train_loader, optimizer, epoch, criterion, train=True, save_path=save_path, scaler=scaler)
+                if epoch % 2 == 0:
+                    test_loss = evaluation(model, test_loader, optimizer, epoch, criterion= criterion, train=False, save_path=save_path , scaler=scaler)
+                    if test_loss < min_loss:
+                        min_loss = test_loss
+                        torch.save(model.state_dict(), f'{save_string}_best.pth')
+                    print(f"Epoch {epoch}, Train Loss: {train_loss:.4f}, Test Loss: {test_loss:.4f}")
                 exit()
             else:
                 test_loss =  evaluation(model, test_loader, optimizer, epoch, criterion= criterion, train=False, save_path=save_path , scaler=scaler)
