@@ -10,6 +10,7 @@ class EConvlstm(nn.Module):
         super().__init__()
         self.width = width
         self.height = height
+        
         self.model_type = model_type
         self.skip_lstm = skip_lstm 
         self.method = "add"
@@ -17,8 +18,7 @@ class EConvlstm(nn.Module):
         self.encoder = Encoder(5)
         self.encoder_channels = [32, 24, 32, 64, 1280]
         
-        self.mheight = 9
-        self.mwidth = 11
+    
         self.bottleneck_channels = 128
 
         if "LSTM" in self.model_type:
@@ -141,6 +141,15 @@ class EConvlstm(nn.Module):
                         max_t = torch.max(non_zero_events)
                         denom = (max_t - min_t)
                         # Avoid division by zero, but only where denom is zero
+                        
+                        ## linear interpolation to send x between 0 and 346
+                        # x = events[:, :, 1]
+                        # x = ((x - x.min()) / (x.max() - x.min()) * 346)
+                        # ## cast x to int
+                        # events[:, :, 1] = x.to(torch.uint8)
+                        # y = events[:, :, 2]
+                        # y = ((y - y.min()) / (y.max() - y.min()) * 260)
+                        # events[:, :, 2] = y.to(torch.uint8)
                         # print(f"Target time range: [{events[:, :, 0].min():.3f}, {events[:, :, 0].max():.3f}]")
                         # print(f"Target x range: [{events[:, :, 1].min():.3f}, {events[:, :, 1].max():.3f}]")
                         # print(f"Target y range: [{events[:, :, 2].min():.3f}, {events[:, :, 2].max():.3f}]")
@@ -148,14 +157,15 @@ class EConvlstm(nn.Module):
                         denom[denom < 1e-8] = 1.0  # If all times are the same, set denom to 1 to avoid NaN
                         events[:, :, 0] = ((events[:, :, 0] - min_t) / denom).clamp(0, 1)
                         # print("After normalization:")
-                        # non_zero_events = events[:, :, 0][non_zero_mask]
-                        # print(non_zero_events, f"min: {non_zero_events.min().item()}, max: {non_zero_events.max().item()}, mean: {non_zero_events.mean().item()}, std: {non_zero_events.std().item()}")
+                        non_zero_events = events[:, :, 0][non_zero_mask]
+                        # print(f"min: {non_zero_events.min().item()}, max: {non_zero_events.max().item()}, mean: {non_zero_events.mean().item()}, std: {non_zero_events.std().item()}")
                         events[:,:, 1] = events[:, :, 1].clamp(0, self.width-1)
                         events[:,:, 2] = events[:, :, 2].clamp(0, self.height-1)
-                        hist_events = eventstovoxel(events, self.height, self.width, training=training, hotpixel=hotpixel).float()
+                        hist_events = eventstovoxel(events, self.height, self.width, training=training, hotpixel=hotpixel).float() * 0
                     else:
                         hist_events = torch.zeros((events.shape[0], 5, self.height, self.width), device=events.device)
-                        
+                    self.print_statistics(hist_events, events)
+                    # exit()
                     seq_events.append(hist_events)
                 else:
                     hist_events = events
@@ -165,8 +175,7 @@ class EConvlstm(nn.Module):
                 timed_features[i].append(f)
             
         # Concatenate the outputs from the transformer and CNN
-            interpolated = F.interpolate(CNN_encoder, size=(self.mheight, self.mwidth), mode='bilinear', align_corners=False)
-            lstm_inputs.append(interpolated)
+            lstm_inputs.append(CNN_encoder)
         lstm_inputs = torch.stack(lstm_inputs, dim=1)
         skip_outputs = []
         

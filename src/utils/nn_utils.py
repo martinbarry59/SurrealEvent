@@ -61,7 +61,7 @@ def process_output(mask):
 
 
 
-def forward_feed(model, data, device, train, step_size=1, start_seq=0, block_update=30, video_writer=None, zeroing=False, hotpixel=False, noise_gen=None):
+def forward_feed(model, data, device, train, step_size=1, start_seq=0, block_update=30, video_writer=None, zeroing=False, hotpixel=False, noise_gen=None, zero_all=False):
     seq_events = []
     seq_depths = []
     seq_labels = []
@@ -74,6 +74,9 @@ def forward_feed(model, data, device, train, step_size=1, start_seq=0, block_upd
             ## add white noise (-1 or 1 ) with 10% probability
             events, depth = events.to(device), depth.to(device)
             events = events if not zeroing else events * 0
+            if zero_all:
+                events = events * 0
+                depth = depth * 0 
             t_min, t_max = events[:,:,0].min().item(), events[:,:,0].max().item()
             noise_events = noise_gen.step(events.shape[0], t_min, t_max) 
             if noise_events is not None and noise_events.shape[0] > 0:
@@ -158,7 +161,7 @@ def sequence_for_LSTM(data, model, criterion, optimizer, device,
     # print(f"Starting training from {t_start} for {N_update} updates with block size {block_update} and step size {step_size}")
     optimizer.zero_grad()
     zero_run = True if 0.1 > random.random() else False
-
+    zero_all = True if 0.01 > random.random() else False
     hotpixel = True if torch.rand(1).item() < 0.3 else False
     config = random.choice([None, 'minimal', 'nighttime']) if train else 'minimal'
     noise_gen = create_persistent_noise_generator_with_augmentations(width=346, height=260, device=device, config_type=config, training=True, seed=None)
@@ -175,7 +178,7 @@ def sequence_for_LSTM(data, model, criterion, optimizer, device,
             zeroing = False
         predictions, encodings, labels, depths = forward_feed(model, data, device, train, step_size=step_size, 
                                                               start_seq=start_seq, block_update=block_update, 
-                                                              video_writer=video_writer, zeroing=zeroing, hotpixel=hotpixel, noise_gen=noise_gen)
+                                                              video_writer=video_writer, zeroing=zeroing, hotpixel=hotpixel, noise_gen=noise_gen, zero_all=zero_all)
 
         
         
@@ -213,5 +216,5 @@ def sequence_for_LSTM(data, model, criterion, optimizer, device,
         # if n == 0:
         #     check_CPC_representation_collapse(predictions, encodings)
     model.reset_states()
-    return loss_avg, loss_MSE, loss_SSIM, step_size, zero_run
+    return loss_avg, loss_MSE, loss_SSIM, step_size, zero_run, zero_all
 

@@ -35,7 +35,7 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
                 os.makedirs(os.path.dirname(writer_path), exist_ok=True)
             video_writer = cv2.VideoWriter(writer_path, fourcc, 30, (3*346,260)) if (batch_step % 100 == 0 and save_path) else None
             # with torch.amp.autocast(device_type=device.type):
-            loss_avg, loss_MSE, loss_SSIM, step_size, zero_run = sequence_for_LSTM(data, model, criterion, optimizer, device, train, epoch, scaler, video_writer=video_writer)
+            loss_avg, loss_MSE, loss_SSIM, step_size, zero_run, zero_all = sequence_for_LSTM(data, model, criterion, optimizer, device, train, epoch, scaler, video_writer=video_writer)
 
             batch_loss = sum(loss_avg)/len(loss_avg)
             epoch_loss.append(batch_loss)
@@ -51,7 +51,7 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
             if model.model_type != "Transformer":
                 model.reset_states()            
             batch_tqdm.update(1)
-            batch_tqdm.set_postfix({"loss": batch_loss, "step_size": step_size, "zero_run": zero_run})
+            batch_tqdm.set_postfix({"loss": batch_loss, "step_size": step_size, "zero_run": zero_run, "zero_all": zero_all})
             save_string = f'{checkpoint_path}/model_epoch_{epoch}_{model.model_type}'
 
             torch.save(model.state_dict(), f'{save_string}_tmp.pth') if video_writer else None
