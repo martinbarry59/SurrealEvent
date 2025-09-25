@@ -145,7 +145,7 @@ class EConvlstm(nn.Module):
                         ## linear interpolation to send x between 0 and 346
                         # x = events[:, :, 1]
                         # x = ((x - x.min()) / (x.max() - x.min()) * 346)
-                        # ## cast x to int
+                        ## cast x to int
                         # events[:, :, 1] = x.to(torch.uint8)
                         # y = events[:, :, 2]
                         # y = ((y - y.min()) / (y.max() - y.min()) * 260)
@@ -161,10 +161,10 @@ class EConvlstm(nn.Module):
                         # print(f"min: {non_zero_events.min().item()}, max: {non_zero_events.max().item()}, mean: {non_zero_events.mean().item()}, std: {non_zero_events.std().item()}")
                         events[:,:, 1] = events[:, :, 1].clamp(0, self.width-1)
                         events[:,:, 2] = events[:, :, 2].clamp(0, self.height-1)
-                        hist_events = eventstovoxel(events, self.height, self.width, training=training, hotpixel=hotpixel).float() * 0
+                        hist_events = eventstovoxel(events, self.height, self.width, training=training, hotpixel=hotpixel).float()
                     else:
                         hist_events = torch.zeros((events.shape[0], 5, self.height, self.width), device=events.device)
-                    self.print_statistics(hist_events, events)
+                    # self.print_statistics(hist_events, events)
                     # exit()
                     seq_events.append(hist_events)
                 else:

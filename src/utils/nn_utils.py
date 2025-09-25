@@ -67,16 +67,20 @@ def forward_feed(model, data, device, train, step_size=1, start_seq=0, block_upd
     seq_labels = []
     max_t = start_seq + block_update * step_size if block_update > 0 else len(data[0]) - 1
     with torch.no_grad():
+         
         for t in range(start_seq, max_t, step_size):  
-            
-            datat = get_data(data, t, step_size) if not zeroing else get_data(data, start_seq, step_size)
+            t_entry = torch.ones(data[0].shape[1], dtype=torch.long) * t
+            t_entry[zeroing] = start_seq
+            datat = get_data(data, t_entry, step_size)
             events, depth = datat[:2]
             ## add white noise (-1 or 1 ) with 10% probability
-            events, depth = events.to(device), depth.to(device)
-            events = events if not zeroing else events * 0
-            if zero_all:
-                events = events * 0
-                depth = depth * 0 
+            events, depth = events, depth
+            # events = events if not zeroing else events * 0
+            events = events * (1-zero_all.to(torch.uint8)).view(-1,1,1) * (1-zeroing.to(torch.uint8)).view(-1,1,1)  # apply zero_all mask
+            depth = depth * (1-zero_all.to(torch.uint8)).view(-1,1,1)  # apply zero_all mask
+
+            events = events.to(device)
+            depth = depth.to(device)
             t_min, t_max = events[:,:,0].min().item(), events[:,:,0].max().item()
             noise_events = noise_gen.step(events.shape[0], t_min, t_max) 
             if noise_events is not None and noise_events.shape[0] > 0:
@@ -95,7 +99,6 @@ def forward_feed(model, data, device, train, step_size=1, start_seq=0, block_upd
             seq_labels = np.array(seq_labels)
 
     predictions, encodings, seq_events = model(seq_events, training=train, hotpixel=hotpixel)
-
     with torch.no_grad():
         if video_writer:
             # for t in range(predictions.shape[1]):
@@ -121,15 +124,15 @@ def compute_mixed_loss(predictions, depths, criterion, epoch):
         pred_lpips = pred * 2 - 1
         enc_lpips = enc * 2 - 1
         loss += criterion(pred_lpips, enc_lpips).mean()
-        # if epoch > 0:
-        #     loss += min(1, epoch) * compute_edge_loss(pred[:,0:1], enc[:,0:1])
-        #     if t > 0:
-        #         mse = torch.nn.MSELoss()(depths[:,t], depths[:,t-1])
-        #         loss_est = torch.exp(torch.clamp(-50 * mse, min=-10, max=10))
-        #         loss_t = F.l1_loss(predictions[:,t], predictions[:,t-1])
-        #         TC_loss = loss_t * loss_est
+        if epoch > 0:
+            loss += min(1, epoch) * compute_edge_loss(pred[:,0:1], enc[:,0:1])
+            if t > 0:
+                mse = torch.nn.MSELoss()(depths[:,t], depths[:,t-1])
+                loss_est = torch.exp(torch.clamp(-50 * mse, min=-10, max=10))
+                loss_t = F.l1_loss(predictions[:,t], predictions[:,t-1])
+                TC_loss = loss_t * loss_est
                 
-        #         loss += 1 * min(1, max(0, (epoch)/3) * TC_loss)
+                loss += 1 * min(1, max(0, (epoch)/3) * TC_loss)
     return loss / predictions.shape[1]
 
 
@@ -160,8 +163,8 @@ def sequence_for_LSTM(data, model, criterion, optimizer, device,
     loss_SSIM = []
     # print(f"Starting training from {t_start} for {N_update} updates with block size {block_update} and step size {step_size}")
     optimizer.zero_grad()
-    zero_run = True if 0.1 > random.random() else False
-    zero_all = True if 0.01 > random.random() else False
+    zero_run = torch.rand(data[0].shape[1]) < 0.1 if train else torch.zeros(data[0].shape[1])
+    zero_all = torch.rand(data[0].shape[1]) < 0.01 if train else torch.zeros(data[0].shape[1])
     hotpixel = True if torch.rand(1).item() < 0.3 else False
     config = random.choice([None, 'minimal', 'nighttime']) if train else 'minimal'
     noise_gen = create_persistent_noise_generator_with_augmentations(width=346, height=260, device=device, config_type=config, training=True, seed=None)
@@ -171,11 +174,11 @@ def sequence_for_LSTM(data, model, criterion, optimizer, device,
         start_seq = t_start + n * block_update * step_size
         if (start_seq + block_update * step_size) > len_videos - 1:
             break
-        if n>2 and zero_run:
-            zeroing = True
+        if n>2:
+            zeroing = zero_run.bool()
             start_seq = t_start + 3 * block_update * step_size
         else:
-            zeroing = False
+            zeroing = torch.zeros_like(zero_run).bool()
         predictions, encodings, labels, depths = forward_feed(model, data, device, train, step_size=step_size, 
                                                               start_seq=start_seq, block_update=block_update, 
                                                               video_writer=video_writer, zeroing=zeroing, hotpixel=hotpixel, noise_gen=noise_gen, zero_all=zero_all)
@@ -216,5 +219,5 @@ def sequence_for_LSTM(data, model, criterion, optimizer, device,
         # if n == 0:
         #     check_CPC_representation_collapse(predictions, encodings)
     model.reset_states()
-    return loss_avg, loss_MSE, loss_SSIM, step_size, zero_run, zero_all
+    return loss_avg, loss_MSE, loss_SSIM, step_size, zero_run.float().mean().item(), zero_all.float().mean().item()
 

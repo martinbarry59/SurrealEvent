@@ -1,14 +1,13 @@
 import torch
 from torch.utils.data import Dataset
 import h5py
-from torch.nn.utils.rnn import pad_sequence
 import os
 import glob
 import tqdm
 from torchvision.transforms import v2 
 import shutil
 import random
-from utils.functions import  eventstovoxel
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 class RandomChoice(torch.nn.Module):
     def __init__(self, transforms):
        super().__init__()
@@ -122,39 +121,41 @@ def sampling_events(t_old, t_new, events, old_events):
 
 def Transformer_collate(batch):
     # batch = list of (event_chunks, depth) tuples
-    import time 
-    start = time.time()
-    batched_event_chunks = []
-    events = []
-    depths = []
-    depth_time = time.time()
-    for sample in batch:
-        depths.append(sample[1])  # [T, H, W]
-        events.append(sample[0])  # [T, N_i, 4]
+    with torch.no_grad():
+
+        import time 
+        start = time.time()
+        batched_event_chunks = []
+        events = []
+        depths = []
+        depth_time = time.time()
+        for sample in batch:
+            depths.append(sample[1])  # [T, H, W]
+            events.append(sample[0])  # [T, N_i, 4]
+        
+        depths = torch.stack(depths).permute((1,0,2,3))  # [T, B, H, W]
+        events = torch.stack(events).permute((1, 0,2, 3)) # [T, B, N_i, 4]
+        # for _ in range(depths.shape[0]):
+        #     # continue
+            
+        #     t_start = max(t_new - 4 * step, 0)
+        #     t_new = t_new + step
+        #     # list of [N_i, 4]
+            
+        #     if len(batch[0]) == 2:
+        #         event_histories = [sampling_events(t_start, t_new, events, event_histories[n]) for n, (events, _) in enumerate(batch)]
+        #     elif len(batch[0]) == 3:
+        #         event_histories = [sampling_events(t_start, t_new, events, event_histories[n]) for n, (events, _, _) in enumerate(batch)]
+            
+        #     # padded = pad_sequence(event_histories, batch_first=True)  # [B, N_max, 4]
+        
+        #     # batched_event_chunks.append(padded)
     
-    depths = torch.stack(depths).permute((1,0,2,3))  # [T, B, H, W]
-    events = torch.stack(events).permute((1, 0,2, 3))  # [T, B, N_i, 4]
-    # for _ in range(depths.shape[0]):
-    #     # continue
-        
-    #     t_start = max(t_new - 4 * step, 0)
-    #     t_new = t_new + step
-    #     # list of [N_i, 4]
-        
-    #     if len(batch[0]) == 2:
-    #         event_histories = [sampling_events(t_start, t_new, events, event_histories[n]) for n, (events, _) in enumerate(batch)]
-    #     elif len(batch[0]) == 3:
-    #         event_histories = [sampling_events(t_start, t_new, events, event_histories[n]) for n, (events, _, _) in enumerate(batch)]
-        
-    #     # padded = pad_sequence(event_histories, batch_first=True)  # [B, N_max, 4]
-       
-    #     # batched_event_chunks.append(padded)
-   
-    if len(batch[0]) == 2:
-        return [events, depths]
-    elif len(batch[0]) == 3:
-        labels = [sample[2] for sample in batch]
-        return [batched_event_chunks, depths, labels]
+        if len(batch[0]) == 2:
+            return [events, depths]
+        elif len(batch[0]) == 3:
+            labels = [sample[2] for sample in batch]
+            return [batched_event_chunks, depths, labels]
 
 def CNN_collate(batch):
     
@@ -174,6 +175,8 @@ def CNN_collate(batch):
     depths = torch.stack(depths).permute((1,0,2,3))  # [B, T, H, W]
     event_frames = event_frames.permute(1, 0, 2, 3, 4)
     event_frames, depths = apply_augmentations(event_frames, depths)
+    event_frames = event_frames.to(device)
+    depths = depths.to(device)
     return [event_frames, depths]
 # def get_data(data, t, step_size=1):
 #     if len(data) == 2:
@@ -196,9 +199,14 @@ def CNN_collate(batch):
 #             output_events[b, :min(N_events, 50000)] = permuted_events[:50000]
 #         return events_videos, depths[t]
         
-def get_data(data, t, step_size=1, max_events=50000):
+def get_data(data, t_entry, step_size=1, max_events=50000):
     if len(data) == 2:
         events_videos, depths = data  # events: [T, B, N, 4], depths: [T, B, H, W]
+        ## if t is torch tensor
+        if isinstance(t_entry, torch.Tensor):
+            t = max(t_entry).item()
+        else:
+            t = t_entry
         min_index = max(0, t - step_size + 1)
 
         # Slice window and flatten time: [T', B, N, 4] -> [B, T'*N, 4]
@@ -236,8 +244,11 @@ def get_data(data, t, step_size=1, max_events=50000):
         # Pad to max_events if needed
         output_events = torch.zeros(B, max_events, 4, device=device, dtype=dtype)
         output_events[:, :K, :] = gathered
-
-        return output_events, depths[t]
+        ## if t is an array return depth for each t instead of just the last one
+        if isinstance(t_entry, torch.Tensor):
+            return output_events, torch.stack([depths[t_i, idx] for idx, t_i in enumerate(t_entry)], dim=0)  # [B, H, W]
+        else:
+            return output_events, depths[t_entry]
 if __name__ == "__main__":
     data_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../dataset/")
     train_dataset = EventDepthDataset(data_path)
