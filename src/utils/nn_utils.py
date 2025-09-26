@@ -59,9 +59,21 @@ def process_output(mask):
     return target, (B1, T1, B2, T2)
 
 
+def translate_events_and_labels(events, translation, depth):
+    """Translate events by (dx, dy). Events shape: [B, N, 4] or [B, N, 5]
+    depths shape: [B, 1, H, W]
+    """
+    dx, dy = translation
+    translated_events = events.clone()
+    translated_events[:, :, 1] += dx
+    translated_events[:, :, 2] += dy
+    translated_depth = F.pad(depth, (dx, 0, dy, 0), mode='replicate')[:, :, :depth.shape[2], :depth.shape[3]]
+    return translated_events, translated_depth
 
-
-def forward_feed(model, data, device, train, step_size=1, start_seq=0, block_update=30, video_writer=None, zeroing=False, hotpixel=False, noise_gen=None, zero_all=False):
+def forward_feed(model, data, device, train, step_size=1, 
+                 start_seq=0, block_update=30, video_writer=None, 
+                 zeroing=False, hotpixel=False, noise_gen=None, zero_all=False,
+                 translation=(1, 1)):
     seq_events = []
     seq_depths = []
     seq_labels = []
@@ -69,9 +81,10 @@ def forward_feed(model, data, device, train, step_size=1, start_seq=0, block_upd
     with torch.no_grad():
         t_entry = start_seq
         for t in range(start_seq.max().item(), max_t, step_size):  
-            t_entry[not zeroing] = t
+            t_entry[~zeroing] = t
             datat = get_data(data, t_entry, step_size)
             events, depth = datat[:2]
+            events, depth = translate_events_and_labels(events, translation, depth=depth)
             ## add white noise (-1 or 1 ) with 10% probability
             events, depth = events, depth
             # events = events if not zeroing else events * 0
@@ -179,9 +192,13 @@ def sequence_for_LSTM(data, model, criterion, optimizer, device,
         start_seq = t_start + steps * block_update * step_size 
         if (start_seq.max().item() + block_update * step_size) > len_videos - 1:
             break
+        width = model.width
+        height = model.height
+        translation = (random.randint(-width//2, width//2), random.randint(-height//2, height//2)) if train else (0, 0)
         predictions, encodings, labels, depths = forward_feed(model, data, device, train, step_size=step_size, 
                                                               start_seq=start_seq, block_update=block_update, 
-                                                              video_writer=video_writer, zeroing=zeroing, hotpixel=hotpixel, noise_gen=noise_gen, zero_all=zero_all)
+                                                              video_writer=video_writer, zeroing=zeroing, hotpixel=hotpixel, noise_gen=noise_gen, zero_all=zero_all,
+                                                              translation=translation)
 
         
         
