@@ -9,7 +9,7 @@ from config import data_path, results_path, checkpoint_path
 import os
 import shutil
 from utils.functions import create_persistent_noise_generator_with_augmentations
-
+from torchvision.transforms import v2
 from ignite.metrics import SSIM
 from ignite.engine import Engine
 def eval_step(engine, batch):
@@ -61,13 +61,23 @@ def process_output(mask):
 
 def translate_events_and_labels(events, translation, depth):
     """Translate events by (dx, dy). Events shape: [B, N, 4] or [B, N, 5]
-    depths shape: [B, 1, H, W]
+    depths shape: [B, H, W]
     """
     dx, dy = translation
     translated_events = events.clone()
     translated_events[:, :, 1] += dx
     translated_events[:, :, 2] += dy
-    translated_depth = F.pad(depth, (dx, 0, dy, 0), mode='replicate')[:, :, :depth.shape[2], :depth.shape[3]]
+    ## translate depth replace the out of bound pixels with 0
+    B, H, W = depth.shape
+    translated_depth = torch.zeros_like(depth)
+    if dx >= 0 and dy >= 0:
+        translated_depth[:, dy:, dx:] = depth[:, :H-dy, :W-dx]
+    elif dx >= 0 and dy < 0:
+        translated_depth[:, :H+dy, dx:] = depth[:, -dy:, :W-dx]
+    elif dx < 0 and dy >= 0:
+        translated_depth[:, dy:, :W+dx] = depth[:, :H-dy, -dx:]
+    else:  # dx < 0 and dy < 0
+        translated_depth[:, :H+dy, :W+dx] = depth[:, -dy:, -dx:]
     return translated_events, translated_depth
 
 def forward_feed(model, data, device, train, step_size=1, 
@@ -86,7 +96,6 @@ def forward_feed(model, data, device, train, step_size=1,
             events, depth = datat[:2]
             events, depth = translate_events_and_labels(events, translation, depth=depth)
             ## add white noise (-1 or 1 ) with 10% probability
-            events, depth = events, depth
             # events = events if not zeroing else events * 0
             events = events * (1-zero_all.to(torch.uint8)).view(-1,1,1) * (1-zeroing.to(torch.uint8)).view(-1,1,1)  # apply zero_all mask
             depth = depth * (1-zero_all.to(torch.uint8)).view(-1,1,1)  # apply zero_all mask
@@ -175,12 +184,16 @@ def sequence_for_LSTM(data, model, criterion, optimizer, device,
     loss_SSIM = []
     # print(f"Starting training from {t_start} for {N_update} updates with block size {block_update} and step size {step_size}")
     optimizer.zero_grad()
-    zero_run = torch.rand(data[0].shape[1]) < .1 if train else torch.ones(data[0].shape[1])
+    zero_run = torch.rand(data[0].shape[1]) < .1 if train else torch.zeros(data[0].shape[1])
     zero_all = torch.rand(data[0].shape[1]) < 0.01 if train else torch.zeros(data[0].shape[1])
     hotpixel = True if torch.rand(1).item() < 0.3 else False
     config = random.choice([None, 'minimal', 'nighttime']) if train else 'minimal'
     noise_gen = create_persistent_noise_generator_with_augmentations(width=346, height=260, device=device, config_type=config, training=True, seed=None)
     noise_gen.reset()  # per video
+    width = model.width
+    height = model.height
+    translation = (random.randint(-width//2, width//2), random.randint(-height//2, height//2))# if train else (0, 0)
+
     for n in range(N_update):
         steps = n * torch.ones_like(zero_run).long()
         if n>2:
@@ -192,9 +205,7 @@ def sequence_for_LSTM(data, model, criterion, optimizer, device,
         start_seq = t_start + steps * block_update * step_size 
         if (start_seq.max().item() + block_update * step_size) > len_videos - 1:
             break
-        width = model.width
-        height = model.height
-        translation = (random.randint(-width//2, width//2), random.randint(-height//2, height//2)) if train else (0, 0)
+        # print(f"Epoch {epoch}, Update {n+1}/{N_update}, start_seq: {start_seq.tolist()}, step_size: {step_size}, zero_run: {zero_run.float().mean().item():.3f}, zero_all: {zero_all.float().mean().item():.3f}, hotpixel: {hotpixel}, translation: {translation}, config: {config}")
         predictions, encodings, labels, depths = forward_feed(model, data, device, train, step_size=step_size, 
                                                               start_seq=start_seq, block_update=block_update, 
                                                               video_writer=video_writer, zeroing=zeroing, hotpixel=hotpixel, noise_gen=noise_gen, zero_all=zero_all,
