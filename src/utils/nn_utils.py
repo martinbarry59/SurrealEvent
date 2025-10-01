@@ -88,10 +88,12 @@ def forward_feed(model, data, device, train, step_size=1,
     seq_depths = []
     seq_labels = []
     max_t = start_seq.max().item() + block_update * step_size if block_update > 0 else len(data[0]) - 1
+    max_t = min(max_t, len(data[0]) - step_size - 1)
+    n_steps = (max_t - start_seq.max().item())
     with torch.no_grad():
-        t_entry = start_seq
-        for t in range(start_seq.max().item(), max_t, step_size):  
-            t_entry[~zeroing] = t
+        t_entry = start_seq.clone()
+        for t in range(0, n_steps, step_size):  
+            t_entry[~zeroing] = start_seq[~zeroing] + t
             datat = get_data(data, t_entry, step_size)
             events, depth = datat[:2]
             events, depth = translate_events_and_labels(events, translation, depth=depth)
@@ -118,7 +120,7 @@ def forward_feed(model, data, device, train, step_size=1,
         seq_depths = torch.stack(seq_depths, dim=1)
         if len(seq_labels) > 0:
             seq_labels = np.array(seq_labels)
-
+    ## add autoamp cast here
     predictions, encodings, seq_events = model(seq_events, training=train, hotpixel=hotpixel)
     with torch.no_grad():
         if video_writer:
@@ -153,7 +155,7 @@ def compute_mixed_loss(predictions, depths, criterion, epoch):
                 loss_t = F.l1_loss(predictions[:,t], predictions[:,t-1])
                 TC_loss = loss_t * loss_est
                 
-                loss += 1 * min(1, max(0, (epoch)/3) * TC_loss)
+                loss += 5 * min(1, max(0, (epoch)/3) * TC_loss)
     return loss / predictions.shape[1]
 
 
@@ -170,82 +172,83 @@ def sequence_for_LSTM(data, model, criterion, optimizer, device,
                     train = True,  epoch = 0, scaler = None,
                     len_videos=1188, training_steps=300, block_update=25, rand_step=True,
                     video_writer=None):
-    step_size =  torch.randint(5, 40, (1,)).item() if train else 5
-
-    if train:
-        N_update = int(len_videos / (block_update* step_size))
-        t_start = random.randint(0, len_videos - N_update * block_update * step_size - 1)
-    else:
-        training_steps = len_videos
-        N_update = int(training_steps / block_update) - 1
-        t_start = 0
-    loss_avg = []
-    loss_MSE = []
-    loss_SSIM = []
+    
     # print(f"Starting training from {t_start} for {N_update} updates with block size {block_update} and step size {step_size}")
     optimizer.zero_grad()
-    zero_run = torch.rand(data[0].shape[1]) < .1 if train else torch.zeros(data[0].shape[1])
-    zero_all = torch.rand(data[0].shape[1]) < 0.01 if train else torch.zeros(data[0].shape[1])
-    hotpixel = True if torch.rand(1).item() < 0.3 else False
-    config = random.choice([None, 'minimal', 'nighttime']) if train else 'minimal'
-    noise_gen = create_persistent_noise_generator_with_augmentations(width=346, height=260, device=device, config_type=config, training=True, seed=None)
-    noise_gen.reset()  # per video
-    width = model.width
-    height = model.height
-    translation = (random.randint(-width//2, width//2), random.randint(-height//2, height//2))# if train else (0, 0)
+    with torch.no_grad():
+        step_size =  torch.randint(5, 40, (1,)).item() if train else 5
 
-    for n in range(N_update):
-        steps = n * torch.ones_like(zero_run).long()
-        if n>2:
-            zeroing = zero_run.bool()
-            steps[zeroing] = 3
-        else:
-            zeroing = torch.zeros_like(zero_run).bool()
-        
-        start_seq = t_start + steps * block_update * step_size 
-        if (start_seq.max().item() + block_update * step_size) > len_videos - 1:
-            break
-        # print(f"Epoch {epoch}, Update {n+1}/{N_update}, start_seq: {start_seq.tolist()}, step_size: {step_size}, zero_run: {zero_run.float().mean().item():.3f}, zero_all: {zero_all.float().mean().item():.3f}, hotpixel: {hotpixel}, translation: {translation}, config: {config}")
-        predictions, encodings, labels, depths = forward_feed(model, data, device, train, step_size=step_size, 
-                                                              start_seq=start_seq, block_update=block_update, 
-                                                              video_writer=video_writer, zeroing=zeroing, hotpixel=hotpixel, noise_gen=noise_gen, zero_all=zero_all,
-                                                              translation=translation)
-
-        
-        
-        ## compute SSIM loss
-        loss = compute_mixed_loss(predictions, depths, criterion, epoch)
-
-        predictions = predictions.detach()
-        depths = depths.detach()
-        # if not train:
         if train:
-            scaler.scale(loss).backward()
-            # total_norm = 0
-            # for p in model.parameters():
-            #     if p.grad is not None:
-            #         param_norm = p.grad.data.norm(2)
-            #         print(f"{p.shape} grad norm: {param_norm:.6f}")
-            # exit()
-        model.detach_states()
-        loss_avg.append(loss.item())
-        del loss
-        with torch.no_grad():
-            predictions = predictions.view(-1, 1, predictions.shape[-2], predictions.shape[-1]).detach()
-            depths = depths.view(-1, 1, depths.shape[-2], depths.shape[-1]).detach()
-            MSE = F.mse_loss(predictions, depths)
-            loss_MSE.append(MSE.item())
-            ## send depths to same type as predictions
-            depths = depths.type_as(predictions)
-            state = default_evaluator.run([[predictions, depths]])
-            loss_SSIM.append(state.metrics['ssim'])  
-        
-        
-    if train:
-        update(model, optimizer, scaler)
+            N_update = int(len_videos / (block_update* step_size))
+            t_start = random.randint(0, len_videos - N_update * block_update * step_size - 1)
+        else:
+            training_steps = len_videos
+            N_update = int(training_steps / block_update) - 1
+            t_start = 0
+        loss_avg = []
+        loss_MSE = []
+        loss_SSIM = []
+        zero_run = torch.rand(data[0].shape[1]) < .2 if train else torch.zeros(data[0].shape[1])
+        zero_all = torch.rand(data[0].shape[1]) < 0.01 if train else torch.zeros(data[0].shape[1])
+        max_zeroing = random.randint(3, 20)
+        hotpixel = True if torch.rand(1).item() < 0.3 and train else False
+        config = random.choice([None, 'minimal', 'nighttime']) if train else 'minimal'
+        noise_gen = create_persistent_noise_generator_with_augmentations(width=346, height=260, device=device, config_type=config, training=True, seed=None)
+        noise_gen.reset()  # per video
+        width = model.width
+        height = model.height
+        translation = (random.randint(-width//2, width//2), random.randint(-height//2, height//2)) if train else (0, 0)
+        steps = torch.zeros_like(zero_run).long()
+    with torch.cuda.amp.autocast():
+        losses = []
+        for n in range(N_update):
+            if n>=3 and n < max_zeroing:
+                zeroing = zero_run.bool()
+                steps[zeroing] = 3
+            else:
+                zeroing = torch.zeros_like(zero_run).bool()
             
-        # if n == 0:
-        #     check_CPC_representation_collapse(predictions, encodings)
-    model.reset_states()
+            start_seq = t_start + steps * block_update * step_size 
+            if (start_seq.max().item() + block_update * step_size) > len_videos - 1:
+                break
+            # print(f"Epoch {epoch}, Update {n+1}/{N_update}, start_seq: {start_seq.tolist()}, step_size: {step_size}, zero_run: {zero_run.float().mean().item():.3f}, zero_all: {zero_all.float().mean().item():.3f}, hotpixel: {hotpixel}, translation: {translation}, config: {config}")
+        
+            predictions, encodings, labels, depths = forward_feed(model, data, device, train, step_size=step_size, 
+                                                                start_seq=start_seq, block_update=block_update, 
+                                                                video_writer=video_writer, zeroing=zeroing, hotpixel=hotpixel, noise_gen=noise_gen, zero_all=zero_all,
+                                                                translation=translation)
+
+            
+            steps += 1
+            ## compute SSIM loss
+            loss = compute_mixed_loss(predictions, depths, criterion, epoch)
+            losses.append(loss) if train else 0
+            predictions = predictions.detach()
+            depths = depths.detach()
+            # if not train:
+            if train and n % 2 == 0:
+                total_loss = sum(losses) / len(losses)
+                scaler.scale(total_loss).backward()
+                losses = []
+                model.detach_states()
+            loss_avg.append(loss.item())
+            with torch.no_grad():
+                predictions = predictions.view(-1, 1, predictions.shape[-2], predictions.shape[-1]).detach()
+                depths = depths.view(-1, 1, depths.shape[-2], depths.shape[-1]).detach()
+                MSE = F.mse_loss(predictions, depths)
+                loss_MSE.append(MSE.item())
+                ## send depths to same type as predictions
+                depths = depths.type_as(predictions)
+                state = default_evaluator.run([[predictions, depths]])
+                loss_SSIM.append(state.metrics['ssim'])  
+            
+            del predictions, depths
+            torch.cuda.empty_cache()
+        if train:
+            update(model, optimizer, scaler)
+
+        model.reset_states()
+    
+
     return loss_avg, loss_MSE, loss_SSIM, step_size, zero_run.float().mean().item(), zero_all.float().mean().item()
 

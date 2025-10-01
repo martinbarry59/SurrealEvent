@@ -200,7 +200,9 @@ class Decoder(nn.Module):
                 # Align spatial dims without resampling to preserve features
                 target = feats[i - 1]
                 if x.shape[-2:] != target.shape[-2:]:
-                    x = self._match_size(x, target)
+                    x = F.interpolate(
+                    x, size=feats[i - 1].shape[-2:], mode="bilinear", align_corners=False
+                )
                 # Consistently fuse with the matching skip level
                 if self.method == "concatenate":
                     x = torch.cat([x, target], dim=1)

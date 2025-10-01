@@ -166,7 +166,7 @@ class EConvlstm(nn.Module):
                         hist_events = torch.zeros((events.shape[0], 5, self.height, self.width), device=events.device)
                     # self.print_statistics(hist_events, events)
                     # exit()
-                    seq_events.append(hist_events)
+                    seq_events.append(hist_events.detach())
                 else:
                     hist_events = events
 
