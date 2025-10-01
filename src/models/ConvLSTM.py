@@ -137,23 +137,12 @@ class EConvlstm(nn.Module):
                     non_zero_mask = events[:, :, 3] != 0
                     non_zero_events = times[non_zero_mask]
                     if non_zero_events.numel() != 0:
-                        min_t = torch.min(non_zero_events)
-                        max_t = torch.max(non_zero_events)
+                        fake_t = times.clone()
+                        fake_t[~non_zero_mask] = 10000
+                        min_t = torch.min(fake_t, dim=1, keepdim=True).values
+                        fake_t[~non_zero_mask] = -10000
+                        max_t = torch.max(fake_t, dim=1, keepdim=True).values
                         denom = (max_t - min_t)
-                        # Avoid division by zero, but only where denom is zero
-                        
-                        ## linear interpolation to send x between 0 and 346
-                        # x = events[:, :, 1]
-                        # x = ((x - x.min()) / (x.max() - x.min()) * 346)
-                        ## cast x to int
-                        # events[:, :, 1] = x.to(torch.uint8)
-                        # y = events[:, :, 2]
-                        # y = ((y - y.min()) / (y.max() - y.min()) * 260)
-                        # events[:, :, 2] = y.to(torch.uint8)
-                        # print(f"Target time range: [{events[:, :, 0].min():.3f}, {events[:, :, 0].max():.3f}]")
-                        # print(f"Target x range: [{events[:, :, 1].min():.3f}, {events[:, :, 1].max():.3f}]")
-                        # print(f"Target y range: [{events[:, :, 2].min():.3f}, {events[:, :, 2].max():.3f}]")
-                        # print(f"Target polarity range: [{events[:, :, 3].min():.3f}, {events[:, :, 3].max():.3f}]")
                         denom[denom < 1e-8] = 1.0  # If all times are the same, set denom to 1 to avoid NaN
                         events[:, :, 0] = ((events[:, :, 0] - min_t) / denom).clamp(0, 1)
                         # print("After normalization:")
@@ -161,12 +150,12 @@ class EConvlstm(nn.Module):
                         # print(f"min: {non_zero_events.min().item()}, max: {non_zero_events.max().item()}, mean: {non_zero_events.mean().item()}, std: {non_zero_events.std().item()}")
                         events[:,:, 1] = events[:, :, 1].clamp(0, self.width-1)
                         events[:,:, 2] = events[:, :, 2].clamp(0, self.height-1)
-                        hist_events = eventstovoxel(events, self.height, self.width, training=training, hotpixel=hotpixel).float()
+                        hist_events = eventstovoxel(events, self.height, self.width, hotpixel=hotpixel).float()
                     else:
                         hist_events = torch.zeros((events.shape[0], 5, self.height, self.width), device=events.device)
                     # self.print_statistics(hist_events, events)
                     # exit()
-                    seq_events.append(hist_events.detach())
+                    seq_events.append(hist_events)
                 else:
                     hist_events = events
 

@@ -1,22 +1,15 @@
 import random
 from utils.functions import add_frame_to_video
-from utils.dataloader import EventDepthDataset, CNN_collate, Transformer_collate, get_data
+from utils.dataloader import  get_data
 import torch
 import numpy as np
 import torch.nn.functional as F
-from models.TransformerEventSurreal import EventTransformer
-from config import data_path, results_path, checkpoint_path
-import os
-import shutil
+from utils.functions import eventstovoxel
 from utils.functions import create_persistent_noise_generator_with_augmentations
-from torchvision.transforms import v2
-from ignite.metrics import SSIM
-from ignite.engine import Engine
+from skimage.metrics import structural_similarity as ssim
+from numba import njit
 def eval_step(engine, batch):
         return batch
-default_evaluator = Engine(eval_step)
-SSIM_metric = SSIM(data_range=1.0)
-SSIM_metric.attach(default_evaluator, 'ssim')
 
 # def plot_attention_map(attn_weights, events, b, q, img):
 #     query_attention = attn_weights[b, q]  # shape: [N]
@@ -58,18 +51,18 @@ def process_output(mask):
     target.requires_grad = False
     return target, (B1, T1, B2, T2)
 
-
-def translate_events_and_labels(events, translation, depth):
+@njit
+def translate_events_and_labels(events: np.ndarray, translation: tuple[int, int], depth: np.ndarray):
     """Translate events by (dx, dy). Events shape: [B, N, 4] or [B, N, 5]
     depths shape: [B, H, W]
     """
     dx, dy = translation
-    translated_events = events.clone()
+    translated_events = events.copy()
     translated_events[:, :, 1] += dx
     translated_events[:, :, 2] += dy
     ## translate depth replace the out of bound pixels with 0
     B, H, W = depth.shape
-    translated_depth = torch.zeros_like(depth)
+    translated_depth = np.zeros_like(depth)
     if dx >= 0 and dy >= 0:
         translated_depth[:, dy:, dx:] = depth[:, :H-dy, :W-dx]
     elif dx >= 0 and dy < 0:
@@ -80,48 +73,51 @@ def translate_events_and_labels(events, translation, depth):
         translated_depth[:, :H+dy, :W+dx] = depth[:, -dy:, -dx:]
     return translated_events, translated_depth
 
+
+@njit
+def retrieve_sequence(data, start_seq, step_size=1, block_update=30, 
+                      zeroing=False, 
+                      zero_all=False, translation=(1, 1)):
+    seq_events = []
+    seq_depths = []
+    max_t = start_seq.max()+ block_update * step_size if block_update > 0 else len(data[0]) - 1
+    max_t = min(max_t, len(data[0]) - step_size - 1)
+    n_steps = (max_t - start_seq.max())
+    translation = (0,0)
+    t_entry = start_seq.copy()
+    for t in range(0, n_steps, step_size):  
+        t_entry[~zeroing] = start_seq[~zeroing] + t
+        datat = get_data(data, t_entry, step_size)
+        events, depth = datat[:2]
+        events, depth = translate_events_and_labels(events, translation, depth=depth)
+        
+        ## add white noise (-1 or 1 ) with 10% probability
+        # events = events if not zeroing else events * 0
+        events = events * (1-zero_all).reshape(-1,1,1) * (1-zeroing).reshape(-1,1,1)  # apply zero_all mask
+        depth = depth * (1-zero_all).reshape(-1,1,1)  # apply zero_all mask
+
+     
+        seq_events.append(events)
+        seq_depths.append(depth / 255)
+        
+    ## convert the seq_labels to numpy array
+   
+
+    return seq_events, seq_depths
 def forward_feed(model, data, device, train, step_size=1, 
                  start_seq=0, block_update=30, video_writer=None, 
                  zeroing=False, hotpixel=False, noise_gen=None, zero_all=False,
                  translation=(1, 1)):
-    seq_events = []
-    seq_depths = []
-    seq_labels = []
-    max_t = start_seq.max().item() + block_update * step_size if block_update > 0 else len(data[0]) - 1
-    max_t = min(max_t, len(data[0]) - step_size - 1)
-    n_steps = (max_t - start_seq.max().item())
-    with torch.no_grad():
-        t_entry = start_seq.clone()
-        for t in range(0, n_steps, step_size):  
-            t_entry[~zeroing] = start_seq[~zeroing] + t
-            datat = get_data(data, t_entry, step_size)
-            events, depth = datat[:2]
-            events, depth = translate_events_and_labels(events, translation, depth=depth)
-            ## add white noise (-1 or 1 ) with 10% probability
-            # events = events if not zeroing else events * 0
-            events = events * (1-zero_all.to(torch.uint8)).view(-1,1,1) * (1-zeroing.to(torch.uint8)).view(-1,1,1)  # apply zero_all mask
-            depth = depth * (1-zero_all.to(torch.uint8)).view(-1,1,1)  # apply zero_all mask
-
-            events = events.to(device)
-            depth = depth.to(device)
-            t_min, t_max = events[:,:,0].min().item(), events[:,:,0].max().item()
-            noise_events = noise_gen.step(events.shape[0], t_min, t_max) 
-            if noise_events is not None and noise_events.shape[0] > 0:
-                events = torch.cat((events, noise_events), dim=1)
-            labels = None
-
-            if len(datat) == 4:
-                labels = datat[3]
-            seq_events.append(events.to(torch.float32))
-            seq_depths.append(depth / 255)
-            if labels is not None:
-                seq_labels.append(labels)
-        ## convert the seq_labels to numpy array
-        seq_depths = torch.stack(seq_depths, dim=1)
-        if len(seq_labels) > 0:
-            seq_labels = np.array(seq_labels)
+    seq_events, seq_depths = retrieve_sequence(data, start_seq, step_size, 
+                                                            block_update, zeroing,
+                                                            zero_all, translation)
+    ## list of arrays to tensor
+    seq_events = torch.tensor(np.stack(seq_events), device=device).float()
+    seq_depths = torch.tensor(np.stack(seq_depths), device=device).float().permute(1,0,2,3)
+    
     ## add autoamp cast here
     predictions, encodings, seq_events = model(seq_events, training=train, hotpixel=hotpixel)
+    
     with torch.no_grad():
         if video_writer:
             # for t in range(predictions.shape[1]):
@@ -131,7 +127,7 @@ def forward_feed(model, data, device, train, step_size=1,
                 outputs = predictions[:,t]
                 images_to_write = [events, depth[0], outputs[0]]
                 add_frame_to_video(video_writer, images_to_write)
-    return predictions, encodings, seq_labels, seq_depths
+    return predictions, encodings, seq_depths
 
 
 
@@ -188,32 +184,32 @@ def sequence_for_LSTM(data, model, criterion, optimizer, device,
         loss_avg = []
         loss_MSE = []
         loss_SSIM = []
-        zero_run = torch.rand(data[0].shape[1]) < .2 if train else torch.zeros(data[0].shape[1])
-        zero_all = torch.rand(data[0].shape[1]) < 0.01 if train else torch.zeros(data[0].shape[1])
+        zero_run = np.random.rand(data[0].shape[1]) < .2 if train else np.zeros(data[0].shape[1])
+        zero_all = np.random.rand(data[0].shape[1]) < 0.01 if train else np.zeros(data[0].shape[1])
         max_zeroing = random.randint(3, 20)
-        hotpixel = True if torch.rand(1).item() < 0.3 and train else False
+        hotpixel = True if np.random.rand(1) < 0.3 and train else False
         config = random.choice([None, 'minimal', 'nighttime']) if train else 'minimal'
         noise_gen = create_persistent_noise_generator_with_augmentations(width=346, height=260, device=device, config_type=config, training=True, seed=None)
         noise_gen.reset()  # per video
         width = model.width
         height = model.height
         translation = (random.randint(-width//2, width//2), random.randint(-height//2, height//2)) if train else (0, 0)
-        steps = torch.zeros_like(zero_run).long()
+        steps = np.zeros_like(zero_run).astype(np.int64)
     with torch.cuda.amp.autocast():
         losses = []
         for n in range(N_update):
             if n>=3 and n < max_zeroing:
-                zeroing = zero_run.bool()
+                zeroing = zero_run.astype(bool)
                 steps[zeroing] = 3
             else:
-                zeroing = torch.zeros_like(zero_run).bool()
-            
-            start_seq = t_start + steps * block_update * step_size 
-            if (start_seq.max().item() + block_update * step_size) > len_videos - 1:
+                zeroing = np.zeros_like(zero_run).astype(bool)
+
+            start_seq = t_start + steps * block_update * step_size
+            if (start_seq.max() + block_update * step_size) > len_videos - 1:
                 break
             # print(f"Epoch {epoch}, Update {n+1}/{N_update}, start_seq: {start_seq.tolist()}, step_size: {step_size}, zero_run: {zero_run.float().mean().item():.3f}, zero_all: {zero_all.float().mean().item():.3f}, hotpixel: {hotpixel}, translation: {translation}, config: {config}")
         
-            predictions, encodings, labels, depths = forward_feed(model, data, device, train, step_size=step_size, 
+            predictions, _, depths = forward_feed(model, data, device, train, step_size=step_size, 
                                                                 start_seq=start_seq, block_update=block_update, 
                                                                 video_writer=video_writer, zeroing=zeroing, hotpixel=hotpixel, noise_gen=noise_gen, zero_all=zero_all,
                                                                 translation=translation)
@@ -224,7 +220,6 @@ def sequence_for_LSTM(data, model, criterion, optimizer, device,
             loss = compute_mixed_loss(predictions, depths, criterion, epoch)
             losses.append(loss) if train else 0
             predictions = predictions.detach()
-            depths = depths.detach()
             # if not train:
             if train and n % 2 == 0:
                 total_loss = sum(losses) / len(losses)
@@ -233,15 +228,13 @@ def sequence_for_LSTM(data, model, criterion, optimizer, device,
                 model.detach_states()
             loss_avg.append(loss.item())
             with torch.no_grad():
-                predictions = predictions.view(-1, 1, predictions.shape[-2], predictions.shape[-1]).detach()
-                depths = depths.view(-1, 1, depths.shape[-2], depths.shape[-1]).detach()
+                predictions = predictions.view(-1, predictions.shape[-2], predictions.shape[-1]).detach()
+                depths = depths.contiguous().view(-1, depths.shape[-2], depths.shape[-1])
                 MSE = F.mse_loss(predictions, depths)
                 loss_MSE.append(MSE.item())
                 ## send depths to same type as predictions
                 depths = depths.type_as(predictions)
-                state = default_evaluator.run([[predictions, depths]])
-                loss_SSIM.append(state.metrics['ssim'])  
-            
+                loss_SSIM.append(ssim(np.array(predictions), np.array(depths), data_range=1.0))
             del predictions, depths
             torch.cuda.empty_cache()
         if train:

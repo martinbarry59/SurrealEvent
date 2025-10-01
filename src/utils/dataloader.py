@@ -7,7 +7,29 @@ import tqdm
 from torchvision.transforms import v2 
 import shutil
 import random
+from numba import njit, prange
+import numpy as np
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+@njit(parallel=True)
+def process_events(events: np.ndarray, depth: np.ndarray):
+    ## convert uint8
+    
+
+    events = events[:, :4]
+    
+    # voxels = torch.zeros((depth.shape[0], 5, 260, 346)).to(torch.uint8)
+    step = 1/(30*12)
+    N = 50000
+    t_events = np.zeros((depth.shape[0], N, 4), dtype=np.float32)
+    for t in prange(depth.shape[0]):
+        t_start = (t) * step
+        times = events[:, 0]
+        nevents = events[ (times > t_start) * (times < (t + 1) * step)].reshape(1,-1,4)
+
+        if nevents.shape[1] > N:
+            nevents = nevents[:, :N, :]
+        t_events[t, :nevents.shape[1]] = nevents
+    return t_events, depth
 class RandomChoice(torch.nn.Module):
     def __init__(self, transforms):
        super().__init__()
@@ -19,8 +41,8 @@ class RandomChoice(torch.nn.Module):
 def event_dropout(events, p=0.1):
     mask = torch.rand_like(events) > p
     return events * mask
-def remove_border(tensor, edges=1):
-    border = torch.zeros_like(tensor)
+def remove_border(tensor : np.ndarray, edges: int = 1) -> np.ndarray:
+    border = np.zeros_like(tensor)
     ## remove border of last two dimensions without knowing how much dimension the tensor has before
     if len(tensor.shape) == 4:
         border[:, :, edges:-edges, edges:-edges] = 1
@@ -28,14 +50,14 @@ def remove_border(tensor, edges=1):
         border[:, edges:-edges, edges:-edges] = 1
     
     return tensor * border
-def apply_augmentations(events, depth):
+def apply_augmentations(events: np.ndarray, depth: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     ## transfor grayscale images
     transforms = RandomChoice([
         # v2.RandomHorizontalFlip(),
         # v2.RandomVerticalFlip(),
         v2.RandomRotation(180),
     ])
-    to_process = torch.cat([events, depth.unsqueeze(2)], dim=2)
+    to_process = np.concatenate([events, depth[..., np.newaxis]], axis=-1)
     ## border to 0 
     
     
@@ -52,9 +74,9 @@ class EventDepthDataset(Dataset):
         for i in tqdm.tqdm(range(len(self.events_files))):
             try:
                 with h5py.File(self.events_files[i], 'r') as f:
-                    events = torch.Tensor(f['vids'][:])  # shape [N_events, 4]
+                    events = np.array(f['vids'][:])  # shape [N_events, 4]
                 with h5py.File(self.depth_files[i], 'r') as f:
-                    depth = torch.Tensor(f['vids'][:])  # shape [T, H, W]
+                    depth = np.array(f['vids'][:])  # shape [T, H, W]
             except:
                 
                 print(f"Error reading file {self.events_files[i]} or {self.depth_files[i]}")
@@ -65,51 +87,17 @@ class EventDepthDataset(Dataset):
                     print(f"Deleted folder {parent_folder}")
     def __len__(self):
         return len(self.events_files)
-
+    
     def __getitem__(self, idx):
         with h5py.File(self.events_files[idx], 'r') as f:
-            events = torch.Tensor(f['vids'][:], )  # shape [N_events, 4]
+            events = np.array(f['vids'][:], dtype=np.float32)  # shape [N_events, 4]
         with h5py.File(self.depth_files[idx], 'r') as f:
-            depth = torch.Tensor(f['vids'][:])  # shape [T, H, W]
-        
-        
-        ## convert uint8
+            depth = np.array(f['vids'][:], dtype=np.float32)  # shape [T, H, W]
         depth = remove_border(depth)
-        depth = depth.to(torch.uint8)
-        
-        events = events[:, :4]
-        
-        # voxels = torch.zeros((depth.shape[0], 5, 260, 346)).to(torch.uint8)
-        step = 1/(30*12)
-        N = 50000
-        t_events = torch.zeros((depth.shape[0], N, 4), requires_grad=False)
-        for t in range(depth.shape[0]):
-            t_start = (t) * step
-            times = events[:, 0]
-            nevents = events[ (times > t_start) * (times < (t + 1) * step)].unsqueeze(0)
-
-            if nevents.shape[1] > N:
-                nevents = nevents[:, :N, :]
-            t_events[t, :nevents.shape[1]] = nevents
+        t_events, depth = process_events(events, depth)
         return t_events, depth
 
-        if self.tsne:
-            return events, depth, self.events_files[idx].split("/")[-2]  # return the folder name as label
-        else:
-            return voxels, depth
-    # def items_to_cache(self):
-    #     for idx in tqdm.tqdm(range(len(self.events_files))):
-    #         voxels, depth = self.__getitem__(idx)
-    #         ## print types of voxels and depth
-    #         print(f"Voxels type: {voxels.dtype}, Depth type: {depth.dtype}")
-    #         ## save it in efficient format for later use
-
-    #         cache_dir = self.events_files[idx].replace("dataset", "datasetpt")
-    #         if not os.path.exists(cache_dir):
-    #             os.makedirs(cache_dir)
-    #         cache_file = os.path.join(cache_dir, f"item_{idx}.pt")
-    #         torch.save((voxels, depth), cache_file)
-    #         return cache_file
+      
 def sampling_events(t_old, t_new, events, old_events):
     
     
@@ -118,44 +106,23 @@ def sampling_events(t_old, t_new, events, old_events):
     
     
     return events[(events[:, 0] >= t_old )* (events[:, 0] < t_new)]
+# @njit
+def Transformer_collate(batch: list[np.ndarray]):
+    batched_event_chunks = []
+    events = []
+    depths = []
+    for sample in batch:
+        depths.append(sample[1])  # [T, H, W]
+        events.append(sample[0])  # [T, N_i, 4]
 
-def Transformer_collate(batch):
-    # batch = list of (event_chunks, depth) tuples
-    with torch.no_grad():
-
-        import time 
-        start = time.time()
-        batched_event_chunks = []
-        events = []
-        depths = []
-        depth_time = time.time()
-        for sample in batch:
-            depths.append(sample[1])  # [T, H, W]
-            events.append(sample[0])  # [T, N_i, 4]
-        
-        depths = torch.stack(depths).permute((1,0,2,3))  # [T, B, H, W]
-        events = torch.stack(events).permute((1, 0,2, 3)) # [T, B, N_i, 4]
-        # for _ in range(depths.shape[0]):
-        #     # continue
-            
-        #     t_start = max(t_new - 4 * step, 0)
-        #     t_new = t_new + step
-        #     # list of [N_i, 4]
-            
-        #     if len(batch[0]) == 2:
-        #         event_histories = [sampling_events(t_start, t_new, events, event_histories[n]) for n, (events, _) in enumerate(batch)]
-        #     elif len(batch[0]) == 3:
-        #         event_histories = [sampling_events(t_start, t_new, events, event_histories[n]) for n, (events, _, _) in enumerate(batch)]
-            
-        #     # padded = pad_sequence(event_histories, batch_first=True)  # [B, N_max, 4]
-        
-        #     # batched_event_chunks.append(padded)
+    depths = np.stack(depths).transpose((1,0,2,3)) # [T, B, H, W]
+    events = np.stack(events).transpose((1,0,2,3)) # [T, B, N_i, 4]
     
-        if len(batch[0]) == 2:
-            return [events, depths]
-        elif len(batch[0]) == 3:
-            labels = [sample[2] for sample in batch]
-            return [batched_event_chunks, depths, labels]
+    if len(batch[0]) == 2:
+        return [events, depths]
+    elif len(batch[0]) == 3:
+        labels = [sample[2] for sample in batch]
+        return [batched_event_chunks, depths, labels]
 
 def CNN_collate(batch):
     
@@ -182,73 +149,82 @@ def CNN_collate(batch):
 #     if len(data) == 2:
 #         events_videos, depths = data
 #         return events_videos[t], depths[t]
-# def get_data(data, t, step_size=1):
-#     if len(data) == 2:
-#         output_events = torch.zeros((data[0].shape[0], 50000, 4), requires_grad=False)
-#         events_videos, depths = data
-#         min_index = max(0, t-step_size+1)
-#         events_videos = events_videos[min_index:t+1].permute((1,0,2,3))  # [B, T, N, 4]
-#         ## merge all times and N together
-#         events_videos = events_videos.reshape((events_videos.shape[0], -1, 4))
-#         ## shuffle and take first N
-#         for b in range(events_videos.shape[0]):
-#             non_zero_mask = events_videos[b,:,3] != 0
-#             N_events = non_zero_mask.sum().item()
-            
-#             permuted_events = events_videos[b, non_zero_mask][torch.randperm(N_events)]
-#             output_events[b, :min(N_events, 50000)] = permuted_events[:50000]
-#         return events_videos, depths[t]
+@njit
+def get_data(data: list[np.ndarray], t_entry: int, step_size: int = 1) -> tuple[np.ndarray, np.ndarray]: 
         
-def get_data(data, t_entry, step_size=1, max_events=50000):
-    if len(data) == 2:
-        events_videos, depths = data  # events: [T, B, N, 4], depths: [T, B, H, W]
-        ## if t is torch tensor
-        if isinstance(t_entry, torch.Tensor):
-            t = max(t_entry).item()
-        else:
-            t = t_entry
-        min_index = max(0, t - step_size + 1)
+    events_videos, depths = data
+    output_events = np.zeros((events_videos.shape[1], 50000, 4))
+    output_depths = np.zeros((depths.shape[1], depths.shape[2], depths.shape[3]), dtype=np.float32)
 
-        # Slice window and flatten time: [T', B, N, 4] -> [B, T'*N, 4]
-        events_bt = events_videos[min_index:t+1].permute(1, 0, 2, 3)  # [B, T', N, 4]
-        B = events_bt.shape[0]
-        events_bt = events_bt.reshape(B, -1, 4)  # [B, M, 4]
-        M = events_bt.shape[1]
-        K = min(max_events, M)
+    t = t_entry.max()
+    min_index = max(0, t-step_size+1)
+    events_videos = events_videos[min_index:t+1].transpose((1,0,2,3))  # [B, T, N, 4]
+    
+    ## merge all times and N together
+    events_videos = events_videos.copy().reshape((events_videos.shape[0], -1, 4))
+    
+    ## shuffle and take first N
+    for b in range(events_videos.shape[0]):
+        non_zero_mask = events_videos[b,:,3] != 0
+        N_events = non_zero_mask.sum()
 
-        device = events_bt.device
-        dtype = events_bt.dtype
+        permuted_events = events_videos[b, non_zero_mask][np.random.permutation(N_events)]
+        output_events[b, :min(N_events, 50000)] = permuted_events[:50000]  
+    for idx, t_i in enumerate(t_entry):
+        output_depths[idx] =  depths[t_i, idx]
+    ## print types of both outputs
+    return output_events, output_depths
+        
+# def get_data(data, t_entry, step_size=1, max_events=50000):
+#     if len(data) == 2:
+#         events_videos, depths = data  # events: [T, B, N, 4], depths: [T, B, H, W]
+#         ## if t is torch tensor
+#         if isinstance(t_entry, torch.Tensor):
+#             t = max(t_entry).item()
+#         else:
+#             t = t_entry
+#         min_index = max(0, t - step_size + 1)
 
-        # Valid mask = polarity != 0
-        valid = events_bt[..., 3] != 0  # [B, M]
+#         # Slice window and flatten time: [T', B, N, 4] -> [B, T'*N, 4]
+#         events_bt = events_videos[min_index:t+1].permute(1, 0, 2, 3)  # [B, T', N, 4]
+#         B = events_bt.shape[0]
+#         events_bt = events_bt.reshape(B, -1, 4)  # [B, M, 4]
+#         M = events_bt.shape[1]
+#         K = min(max_events, M)
 
-        # Random scores; push invalid to very low score so they’re picked last
-        scores = torch.rand(B, M, device=device)
-        scores = scores.masked_fill(~valid, -1e9)
+#         device = events_bt.device
+#         dtype = events_bt.dtype
 
-        # Select up to K random valid indices per batch
-        topk_idx = scores.topk(k=K, dim=1).indices  # [B, K]
+#         # Valid mask = polarity != 0
+#         valid = events_bt[..., 3] != 0  # [B, M]
 
-        # Gather events
-        gathered = events_bt.gather(1, topk_idx.unsqueeze(-1).expand(-1, -1, 4))  # [B, K, 4]
-        sel_valid = valid.gather(1, topk_idx)  # [B, K]
+#         # Random scores; push invalid to very low score so they’re picked last
+#         scores = torch.rand(B, M, device=device)
+#         scores = scores.masked_fill(~valid, -1e9)
 
-        # Bring valid to front (stable) and zero-out invalid rows
-        order_key = (~sel_valid).float() + torch.rand_like(sel_valid, dtype=torch.float32) * 1e-3
-        sort_idx = order_key.sort(dim=1, stable=True).indices  # [B, K]
+#         # Select up to K random valid indices per batch
+#         topk_idx = scores.topk(k=K, dim=1).indices  # [B, K]
 
-        gathered = gathered.gather(1, sort_idx.unsqueeze(-1).expand(-1, -1, 4))  # [B, K, 4]
-        sel_valid = sel_valid.gather(1, sort_idx)  # [B, K]
-        gathered = gathered * sel_valid.unsqueeze(-1).to(gathered.dtype)  # zero invalid rows
+#         # Gather events
+#         gathered = events_bt.gather(1, topk_idx.unsqueeze(-1).expand(-1, -1, 4))  # [B, K, 4]
+#         sel_valid = valid.gather(1, topk_idx)  # [B, K]
 
-        # Pad to max_events if needed
-        output_events = torch.zeros(B, max_events, 4, device=device, dtype=dtype)
-        output_events[:, :K, :] = gathered
-        ## if t is an array return depth for each t instead of just the last one
-        if isinstance(t_entry, torch.Tensor):
-            return output_events, torch.stack([depths[t_i, idx] for idx, t_i in enumerate(t_entry)], dim=0)  # [B, H, W]
-        else:
-            return output_events, depths[t_entry]
+#         # Bring valid to front (stable) and zero-out invalid rows
+#         order_key = (~sel_valid).float() + torch.rand_like(sel_valid, dtype=torch.float32) * 1e-3
+#         sort_idx = order_key.sort(dim=1, stable=True).indices  # [B, K]
+
+#         gathered = gathered.gather(1, sort_idx.unsqueeze(-1).expand(-1, -1, 4))  # [B, K, 4]
+#         sel_valid = sel_valid.gather(1, sort_idx)  # [B, K]
+#         gathered = gathered * sel_valid.unsqueeze(-1).to(gathered.dtype)  # zero invalid rows
+
+#         # Pad to max_events if needed
+#         output_events = torch.zeros(B, max_events, 4, device=device, dtype=dtype)
+#         output_events[:, :K, :] = gathered
+#         ## if t is an array return depth for each t instead of just the last one
+#         if isinstance(t_entry, torch.Tensor):
+#             return output_events, torch.stack([depths[t_i, idx] for idx, t_i in enumerate(t_entry)], dim=0)  # [B, H, W]
+#         else:
+#             return output_events, depths[t_entry]
 if __name__ == "__main__":
     data_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../dataset/")
     train_dataset = EventDepthDataset(data_path)
