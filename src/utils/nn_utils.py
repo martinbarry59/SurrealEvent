@@ -13,6 +13,7 @@ import os
 import shutil
 from ignite.metrics import SSIM
 from ignite.engine import Engine
+from utils.persistent_noise import create_persistent_noise_generator_with_augmentations
 def eval_step(engine, batch):
         return batch
 default_evaluator = Engine(eval_step)
@@ -58,12 +59,31 @@ def process_output(mask):
     target = target * 1
     target.requires_grad = False
     return target, (B1, T1, B2, T2)
+def translate_events_and_labels(events, translation, depth):
+    """Translate events by (dx, dy). Events shape: [B, N, 4] or [B, N, 5]
+    depths shape: [B, H, W]
+    """
+    dx, dy = translation
+    translated_events = events.clone()
+    translated_events[:, :, 1] += dx
+    translated_events[:, :, 2] += dy
+    ## translate depth replace the out of bound pixels with 0
+    B, H, W = depth.shape
+    translated_depth = torch.zeros_like(depth)
+    if dx >= 0 and dy >= 0:
+        translated_depth[:, dy:, dx:] = depth[:, :H-dy, :W-dx]
+    elif dx >= 0 and dy < 0:
+        translated_depth[:, :H+dy, dx:] = depth[:, -dy:, :W-dx]
+    elif dx < 0 and dy >= 0:
+        translated_depth[:, dy:, :W+dx] = depth[:, :H-dy, -dx:]
+    else:  # dx < 0 and dy < 0
+        translated_depth[:, :H+dy, :W+dx] = depth[:, -dy:, -dx:]
+    return translated_events, translated_depth
 
 
 
+def forward_feed(model, data, device, step_size=1, start_seq=0, block_update=30, video_writer=None, noise_gen=None, translation=(0,0), zeroing=False, zero_all=False):
 
-def forward_feed(model, data, device, step_size=1, start_seq=0, block_update=30, video_writer=None, zeroing=False):
-    
     seq_events = []
     seq_masks = []
     seq_depths = []
@@ -74,8 +94,14 @@ def forward_feed(model, data, device, step_size=1, start_seq=0, block_update=30,
         events, depth = datat[:2]
         ## add white noise (-1 or 1 ) with 10% probability
         events, depth = events.to(device), depth.to(device)
+        events, depth = translate_events_and_labels(events, translation, depth=depth)
         events = events if not zeroing else events * 0
-
+        events = events if not zero_all else events * 0
+        depth = depth if not zero_all else depth * 0
+        t_min, t_max = events[:,:,0].min().item(), events[:,:,0].max().item()
+        noise_events = noise_gen.step(events.shape[0], t_min, t_max) 
+        if noise_events is not None and noise_events.shape[0] > 0:
+            events = torch.cat((events, noise_events), dim=1)
         labels = None
 
         if len(datat) == 4:
@@ -153,19 +179,26 @@ def sequence_for_LSTM(data, model, criterion, optimizer, device,
     # print(f"Starting training from {t_start} for {N_update} updates with block size {block_update} and step size {step_size}")
     optimizer.zero_grad()
     zero_run = True if 0.1 > random.random() else False
+    zero_all = True if 0.01 > random.random() else False
+    max_zeroing = random.randint(3, 20)
+    config = random.choice([None, 'minimal', 'nighttime']) if train else 'minimal'
+    noise_gen = create_persistent_noise_generator_with_augmentations(width=346, height=260, device=device, config_type=config, training=True, seed=None)
+    noise_gen.reset()  # per video
+    width, height = model.width, model.height
+    translation = (random.randint(-width//2, width//2), random.randint(-height//3, height//3)) if train else (0,0)
     for n in range(N_update):
         
         start_seq = t_start + n * block_update * step_size
         if (start_seq + block_update * step_size) > len_videos - 1:
             break
-        if n>2 and zero_run:
+        if n>2 and zero_run and n < max_zeroing:
             zeroing = True
             start_seq = t_start + 3 * block_update * step_size
         else:
             zeroing = False
         predictions, encodings, labels, depths = forward_feed(model, data, device, step_size=step_size, 
                                                               start_seq=start_seq, block_update=block_update, 
-                                                              video_writer=video_writer, zeroing=zeroing)
+                                                              video_writer=video_writer, noise_gen=noise_gen, translation=translation, zeroing=zeroing, zero_all=zero_all)
 
         # if n == 0 and len(labels) > 0:
         #     with torch.no_grad():

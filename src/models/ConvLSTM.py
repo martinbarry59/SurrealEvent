@@ -50,7 +50,20 @@ class EConvlstm(nn.Module):
         ) 
 
         # self._initialize_weights()
-    
+    def print_statistics(self, hist_events, events):
+        """ Print complete set of different statistics for debugging """
+        print("Histogram Events:")
+        for i, hist in enumerate(hist_events):
+            print(f"  Frame {i}: {hist.shape}")
+        print("Original Events:")
+        print(f"  Shape: {events.shape}")
+        print(f"  Min t: {events[:, :, 0].min().item()}, Max t: {events[:, :, 0].max().item()}, Mean t: {events[:, :, 0].mean().item()}, Std t: {events[:, :, 0].std().item()}")
+        print(f"  Min x: {events[:, :, 1].min().item()}, Max x: {events[:, :, 1].max().item()}, Mean x: {events[:, :, 1].mean().item()}, Std x: {events[:, :, 1].std().item()}")
+        print(f"  Min y: {events[:, :, 2].min().item()}, Max y: {events[:, :, 2].max().item()}, Mean y: {events[:, :, 2].mean().item()}, Std y: {events[:, :, 2].std().item()}")
+        print(f"  Min p: {events[:, :, 3].min().item()}, Max p: {events[:, :, 3].max().item()}, Mean p: {events[:, :, 3].mean().item()}, Std p: {events[:, :, 3].std().item()}")
+        for hist in hist_events[0]:
+            print(f"  Histogram shape: {hist.shape}, Min: {hist.min().item()}, Max: {hist.max().item()}")
+            print(f"  Histogram mean: {hist.mean().item()}, std: {hist.std().item()}")
     def _initialize_weights(self):
         """Initialize weights to avoid sigmoid saturation"""
         for m in self.modules():
@@ -111,6 +124,7 @@ class EConvlstm(nn.Module):
                     
                     hist_events = eventstovoxel(events, self.height, self.width).float()
                     seq_events.append(hist_events)
+                    # self.print_statistics(hist_events, events)
                 else:
                     hist_events = events
             CNN_encoder, feats = self.encoder(hist_events)
@@ -118,9 +132,8 @@ class EConvlstm(nn.Module):
             for i, f in enumerate(feats):
                 timed_features[i].append(f)
         # Concatenate the outputs from the transformer and CNN
-            interpolated = F.interpolate(CNN_encoder, size=(self.mheight, self.mwidth), mode='bilinear', align_corners=False)
-            lstm_inputs.append(interpolated)
-        
+            lstm_inputs.append(CNN_encoder)
+
         lstm_inputs = torch.stack(lstm_inputs, dim=1)
         skip_outputs = []
         if self.skip_lstm:
