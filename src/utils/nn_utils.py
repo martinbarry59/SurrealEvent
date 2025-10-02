@@ -7,7 +7,6 @@ import torch
 import numpy as np
 import torch.nn.functional as F
 from models.TransformerEventSurreal import EventTransformer
-from models.BOBVEG import BestOfBothWorld
 from config import data_path, results_path, checkpoint_path
 import os
 import shutil

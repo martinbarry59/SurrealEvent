@@ -1,5 +1,4 @@
 
-from models.BOBW import BestOfBothWorld
 from models.ConvLSTM import EConvlstm
 from utils.dataloader import EventDepthDataset, Transformer_collate
 
@@ -89,13 +88,8 @@ def main():
             except Exception:
                 return -1
         checkpoint_file = max(checkpoint_files, key=extract_epoch)
-        if "BOBW" in network:
-            if "small" in checkpoint_file:
-                model = BestOfBothWorld(model_type=network, width=346, height = 260, embed_dim=128, depth=6, heads=8, num_queries=16)
-            else:
-                model = BestOfBothWorld(model_type=network, width= 346, height = 260, embed_dim=256, depth=12, heads=8, num_queries=64)
-        else:
-            model = EConvlstm(model_type=network, width=346, height=260)
+        
+        model = EConvlstm(model_type=network, width=346, height=260)
         print(f"Loading checkpoint from {checkpoint_file}")
         try:
             model.load_state_dict(torch.load(checkpoint_file, map_location=device))
@@ -114,7 +108,7 @@ def main():
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
 
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10, eta_min=1e-6)  # 10 = total number of epochs
-    test_only = True
+    test_only = False
     save_path = save_path+ f"/{checkpoint_file.split('/')[-1].split('.')[0]}" if test_only else save_path
     min_loss = float('inf')
     for epoch in range(100):
