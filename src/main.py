@@ -63,8 +63,8 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
 
 def main():
 
-    batch_train = 1
-    batch_test = 1
+    batch_train = 15
+    batch_test = 100
     network = "CONVLSTM" # LSTM, Transformer, BOBWFF, BOBWLSTM
     
     ## set seed for reproducibility
