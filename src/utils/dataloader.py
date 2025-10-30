@@ -44,11 +44,13 @@ def apply_augmentations(events, depth):
     events, depth = processed[:, :, :events.shape[2]], processed[:, :, events.shape[2]:].squeeze(2)
     return events, depth
 class EventDepthDataset(Dataset):
-    def __init__(self, h5_dir, tsne=True):
+    def __init__(self, h5_dir, tsne=True, upsampling_factor=12):
         super().__init__()
         self.events_files = glob.glob(os.path.join(h5_dir, "**/*dvs.h5"), recursive = True)
+        print(f"Found {len(self.events_files)} event files in {h5_dir}")
         self.depth_files = [f.replace("dvs.h5", "vid_slomo_depth.h5") for f in self.events_files]
         self.tsne = tsne
+        self.upsampling_factor = upsampling_factor
     def test_corruption(self):
         for i in tqdm.tqdm(range(len(self.events_files))):
             try:
@@ -76,11 +78,11 @@ class EventDepthDataset(Dataset):
         ## convert uint8
         depth = remove_border(depth)
         depth = depth.to(torch.uint8)
-        
+        depth[depth > 0] = 255
         events = events[:, :4]
         
         # voxels = torch.zeros((depth.shape[0], 5, 260, 346)).to(torch.uint8)
-        step = 1/(30*12)
+        step = 1/(30*self.upsampling_factor)
         t_events = torch.zeros((depth.shape[0], 10000, 4), requires_grad=False)
         for t in range(depth.shape[0]):
               # [1, 4]
@@ -156,7 +158,7 @@ def Transformer_collate(batch):
 def CNN_collate(batch):
     
     depths = []
-    step = 1/(30*12)
+    step = 1/(30 * 12)
     event_frames = torch.zeros(len(batch), batch[0][1].shape[0], 2 , 260, 346)
     for batch_n,(events, depth) in enumerate(batch):
         events = event_dropout(events, p=0.05)
@@ -178,6 +180,7 @@ def get_data(data, t):
         return events_videos[t], depths[t]
 if __name__ == "__main__":
     data_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../dataset/")
+    data_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../processed_realvideos/")
     train_dataset = EventDepthDataset(data_path)
-    train_dataset.items_to_cache()
+    train_dataset.test_corruption()
 

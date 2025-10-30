@@ -4,7 +4,7 @@ from models.EfficientConvLSTM import EfficientConvLSTM
 from utils.dataloader import EventDepthDataset, Transformer_collate
 
 import torch
-from config import data_path, checkpoint_path, results_path
+from config import finetuning_data_path, checkpoint_path, results_path
 import cv2
 import tqdm
 import os
@@ -63,14 +63,14 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
 
 def main():
 
-    batch_train = 15
-    batch_test = 80
+    batch_train = 1
+    batch_test = 1
     network = "CONVLSTM" # EfficientConvLSTM, CONVLSTM
     # torch.manual_seed(42)
     # torch.cuda.manual_seed(42)
-    train_dataset = EventDepthDataset(data_path+"/train/", tsne=True)
+    train_dataset = EventDepthDataset(finetuning_data_path+"/train/", tsne=True, upsampling_factor=1)
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_train, shuffle=True, collate_fn=Transformer_collate)
-    test_dataset = EventDepthDataset(data_path+"/test/", tsne=True)
+    test_dataset = EventDepthDataset(finetuning_data_path+"/test/", tsne=True, upsampling_factor=1)
     test_loader = torch.utils.data.DataLoader(test_dataset, batch_size= batch_test, shuffle=False, collate_fn=Transformer_collate)
     epoch_checkpoint = 0
     save_path = f"{results_path}/{network}"
@@ -109,10 +109,10 @@ def main():
     # criterion = torch.nn.SmoothL1Loss()
     criterion = lpips.LPIPS(net='alex')
     criterion.to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-5, weight_decay=1e-5)
 
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10, eta_min=1e-6)  # 10 = total number of epochs
-    test_only = False
+    test_only = True
     save_path = save_path+ f"/{checkpoint_file.split('/')[-1].split('.')[0]}" if test_only else save_path
     min_loss = float('inf')
     for epoch in range(100):

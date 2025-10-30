@@ -10,8 +10,9 @@ from models.TransformerEventSurreal import EventTransformer
 from config import data_path, results_path, checkpoint_path
 import os
 import shutil
-from ignite.metrics import SSIM
+
 from ignite.engine import Engine
+from ignite.metrics import SSIM
 from utils.persistent_noise import create_persistent_noise_generator_with_augmentations
 def eval_step(engine, batch):
         return batch
@@ -137,9 +138,10 @@ def compute_mixed_loss(predictions, depths, criterion, epoch):
     for t in range(predictions.shape[1]):
         pred = predictions[:,t]
         enc = depths[:,t]
-        loss += criterion(pred, enc).mean()
+        pred_loss = pred * (torch.sum(enc, dim=(1,2,3)) > 0)
+        loss += criterion(pred_loss, enc).mean()
         # if epoch > 0:
-        loss += min(1, epoch) * compute_edge_loss(pred[:,0:1], enc[:,0:1])
+        loss += min(1, epoch) * compute_edge_loss(pred_loss[:,0:1], enc[:,0:1])
         if t > 0:
             mse = torch.nn.MSELoss()(depths[:,t], depths[:,t-1])
             loss_est = torch.exp(torch.clamp(-50 * mse, min=-10, max=10))
@@ -220,6 +222,7 @@ def sequence_for_LSTM(data, model, criterion, optimizer, device,
         loss = compute_mixed_loss(predictions, depths, criterion, epoch)
         # if not train:
         if train:
+
             scaler.scale(loss).backward()
             # total_norm = 0
             # for p in model.parameters():
