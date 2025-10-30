@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#SBATCH --job-name=v2esurreal     # create a short name for your job
+#SBATCH --job-name=finetuning     # create a short name for your job
 #SBATCH --nodes=1                # node count
 #SBATCH --ntasks=1               # total number of tasks across all nodes
 #SBATCH --cpus-per-task=8        # cpu-cores per task (>1 if multi-threaded tasks)
@@ -11,4 +11,4 @@
 #SBATCH --mail-type=end          # send email when job ends
 #SBATCH --mail-user=martin.barry@hevs.ch
 ulimit -n 65535
-apptainer exec --nv --bind /home/martin.barry/datasets/processed_surreal:/home/martin.barry/projects/SurrealEvent/dataset/ /home/martin.barry/datasets/Surreal.sif python src/main_CPC.py
+apptainer exec --nv --bind /home/martin.barry/datasets/processed_realvideos:/home/martin.barry/projects/SurrealEvent/dataset/ /home/martin.barry/datasets/Surreal.sif python src/finetuning.py
