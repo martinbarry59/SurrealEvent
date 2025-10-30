@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from  .EventSurrealLayers import Encoder, Decoder, ConvLSTM
 from utils.functions import eventstovoxel
+import matplotlib.pyplot as plt
 class EConvlstm(nn.Module):
     def __init__(self, input_channels = 2, model_type = "CONVLSTM", width=346, height=260, skip_lstm=True):
 
@@ -108,23 +109,38 @@ class EConvlstm(nn.Module):
             # normalise t per batch
             with torch.no_grad():
                 if events.shape[-1] == 4:
+                    times = events[:, :, 0]
+                    non_zero_mask = events[:, :, 3] != 0
+                    non_zero_events = times[non_zero_mask]
+                    if non_zero_events.numel() != 0:
+                        min_t = torch.min(non_zero_events)
+                        max_t = torch.max(non_zero_events)
+                        denom = (max_t - min_t)
+                        # Avoid division by zero, but only where denom is zero
+                        # print(f"Target time range: [{events[:, :, 0].min():.3f}, {events[:, :, 0].max():.3f}]")
+                        # print(f"Target x range: [{events[:, :, 1].min():.3f}, {events[:, :, 1].max():.3f}]")
+                        # print(f"Target y range: [{events[:, :, 2].min():.3f}, {events[:, :, 2].max():.3f}]")
+                        # print(f"Target polarity range: [{events[:, :, 3].min():.3f}, {events[:, :, 3].max():.3f}]")
+                        denom[denom < 1e-8] = 1.0  # If all times are the same, set denom to 1 to avoid NaN
+                        events[:, :, 0] = ((events[:, :, 0] - min_t) / denom).clamp(0, 1)
+                        # print("After normalization:")
+                        # non_zero_events = events[:, :, 0][non_zero_mask]
+                        # print(non_zero_events, f"min: {non_zero_events.min().item()}, max: {non_zero_events.max().item()}, mean: {non_zero_events.mean().item()}, std: {non_zero_events.std().item()}")
+                        events[:,:, 1] = events[:, :, 1].clamp(0, self.width-1)
+                        events[:,:, 2] = events[:, :, 2].clamp(0, self.height-1)
+                        # m = 0
+                        hist_events = eventstovoxel(events, self.height, self.width).float()
+                        # for hist in hist_events[0]:
+                        #     plt.figure(m)
+                        #     plt.imshow(hist.cpu().numpy(), cmap='gray')
+                        #     plt.show()
+                        #     m += 1
+                        seq_events.append(hist_events)
+                        self.print_statistics(hist_events, events)
+                    else:
+                        hist_events = torch.zeros((events.shape[0], 5, self.height, self.width), device=events.device)
+                        
                     
-                    min_t = torch.min(events[:, :, 0], dim=1, keepdim=True)[0]
-                    max_t = torch.max(events[:, :, 0], dim=1, keepdim=True)[0]
-                    denom = (max_t - min_t)
-                    # Avoid division by zero, but only where denom is zero
-                    # print(f"Target time range: [{events[:, :, 0].min():.3f}, {events[:, :, 0].max():.3f}]")
-                    # print(f"Target x range: [{events[:, :, 1].min():.3f}, {events[:, :, 1].max():.3f}]")
-                    # print(f"Target y range: [{events[:, :, 2].min():.3f}, {events[:, :, 2].max():.3f}]")
-                    # print(f"Target polarity range: [{events[:, :, 3].min():.3f}, {events[:, :, 3].max():.3f}]")
-                    denom[denom < 1e-8] = 1.0  # If all times are the same, set denom to 1 to avoid NaN
-                    events[:, :, 0] = (events[:, :, 0] - min_t) / denom
-                    events[:,:, 1] = events[:, :, 1].clamp(0, self.width-1)
-                    events[:,:, 2] = events[:, :, 2].clamp(0, self.height-1)
-                    
-                    hist_events = eventstovoxel(events, self.height, self.width).float()
-                    seq_events.append(hist_events)
-                    # self.print_statistics(hist_events, events)
                 else:
                     hist_events = events
             CNN_encoder, feats = self.encoder(hist_events)

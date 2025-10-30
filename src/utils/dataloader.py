@@ -87,7 +87,12 @@ class EventDepthDataset(Dataset):
         for t in range(depth.shape[0]):
               # [1, 4]
             t_start = max((t - 4) * step, 0)
+            ## print all individual event times
+               
             nevents = events[ ( t_start <= events[:, 0]) * (events[:, 0] < (t + 1) * step)].unsqueeze(0)
+            ## suffle nevents
+            nevents = nevents[:, torch.randperm(nevents.shape[1]), :]
+            
             if nevents.shape[1] > 10000:
                 nevents = nevents[:, :10000, :]
             t_events[t, :nevents.shape[1]] = nevents

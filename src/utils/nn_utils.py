@@ -99,9 +99,9 @@ def forward_feed(model, data, device, step_size=1, start_seq=0, block_update=30,
         events = events if not zero_all else events * 0
         depth = depth if not zero_all else depth * 0
         t_min, t_max = events[:,:,0].min().item(), events[:,:,0].max().item()
-        noise_events = noise_gen.step(events.shape[0], t_min, t_max) 
-        if noise_events is not None and noise_events.shape[0] > 0:
-            events = torch.cat((events, noise_events), dim=1)
+        # noise_events = noise_gen.step(events.shape[0], t_min, t_max) 
+        # if noise_events is not None and noise_events.shape[0] > 0:
+        #     events = torch.cat((events, noise_events), dim=1)
         labels = None
 
         if len(datat) == 4:

@@ -64,7 +64,7 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
 def main():
 
     batch_train = 15
-    batch_test = 80
+    batch_test = 100
     network = "CONVLSTM" # EfficientConvLSTM, CONVLSTM
     # torch.manual_seed(42)
     # torch.cuda.manual_seed(42)
