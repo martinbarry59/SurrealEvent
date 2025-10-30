@@ -204,8 +204,7 @@ class EfficientConvLSTM(nn.Module):
                     events[:, :, 2] = events[:, :, 2].clamp(0, self.height-1)
                     
                     # Convert to voxels
-                    hist_events = eventstovoxel(events, self.height, self.width, 
-                                              training=training, hotpixel=hotpixel).float()
+                    hist_events = eventstovoxel(events, self.height, self.width).float()
                 else:
                     hist_events = events
             

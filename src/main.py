@@ -1,5 +1,6 @@
 
 from models.ConvLSTM import EConvlstm
+from models.EfficientConvLSTM import EfficientConvLSTM
 from utils.dataloader import EventDepthDataset, Transformer_collate
 
 import torch
@@ -62,11 +63,9 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
 
 def main():
 
-    batch_train = 15
+    batch_train = 30
     batch_test = 100
-    network = "CONVLSTM" # LSTM, Transformer, BOBWFF, BOBWLSTM
-    
-    ## set seed for reproducibility
+    network = "FASTLSTM" # EfficientConvLSTM, CONVLSTM
     # torch.manual_seed(42)
     # torch.cuda.manual_seed(42)
     train_dataset = EventDepthDataset(data_path+"/train/", tsne=True)
@@ -99,7 +98,12 @@ def main():
             print(f"Checkpoint not found or failed to load: {e}\nStarting from scratch")
     else:
         print("No checkpoint files found, starting from scratch")
-        model = EConvlstm(model_type=network, width=346, height=260) if "CONVLSTM" in network else BestOfBothWorld(model_type=network, width=346, height=260, embed_dim=256, depth=12, heads=8, num_queries=64)
+        if network == "CONVLSTM":
+            model = EConvlstm(model_type=network, width=346, height=260)
+        elif network == "FASTLSTM":
+            model = EfficientConvLSTM(model_type=network, width=346, height=260)
+        else:
+            raise ValueError(f"Unknown network type: {network}")
     model.to(device)
 
     # criterion = torch.nn.SmoothL1Loss()
@@ -117,9 +121,10 @@ def main():
             if not test_only:
 
                 train_loss = evaluation(model, train_loader, optimizer, epoch, criterion, train=True, save_path=save_path, scaler=scaler)
-                test_loss = evaluation(model, test_loader, optimizer, epoch, criterion= criterion, train=False, save_path=save_path , scaler=scaler)
 
                 save_string = f'{checkpoint_path}/model_epoch_{epoch}_{model.model_type}'
+                test_loss = evaluation(model, test_loader, optimizer, epoch, criterion= criterion, train=False, save_path=save_path , scaler=scaler)
+
                 if checkpoint_file is not None and "small" in checkpoint_file:
                     save_string += "_small"
                 if test_loss < min_loss and not test_only:

@@ -124,7 +124,7 @@ class EConvlstm(nn.Module):
                     
                     hist_events = eventstovoxel(events, self.height, self.width).float()
                     seq_events.append(hist_events)
-                    self.print_statistics(hist_events, events)
+                    # self.print_statistics(hist_events, events)
                 else:
                     hist_events = events
             CNN_encoder, feats = self.encoder(hist_events)
