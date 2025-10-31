@@ -63,8 +63,8 @@ def evaluation(model, loader, optimizer, epoch, criterion = None, train=True, sa
 
 def main():
 
-    batch_train = 1
-    batch_test = 1
+    batch_train = 15
+    batch_test = 80
     network = "CONVLSTM" # EfficientConvLSTM, CONVLSTM
     # torch.manual_seed(42)
     # torch.cuda.manual_seed(42)
@@ -112,7 +112,7 @@ def main():
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-5, weight_decay=1e-5)
 
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10, eta_min=1e-6)  # 10 = total number of epochs
-    test_only = True
+    test_only = False
     save_path = save_path+ f"/{checkpoint_file.split('/')[-1].split('.')[0]}" if test_only else save_path
     min_loss = float('inf')
     for epoch in range(100):

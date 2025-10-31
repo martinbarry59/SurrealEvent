@@ -5,7 +5,7 @@ import os
 ## load depth npy
 t_new=0
 path = "/home/martin-barry/Desktop/HES-SO/Event-Based/Surreal/05_05/05_05_c0002"
-path = "/Users/barry/Desktop/HES-SO/SurrealEvent/processed_realvideos/train/157/video"
+path = "/Users/barry/Desktop/HES-SO/SurrealEvent/processed_realvideos/train/335/video"
 ## load h5 
 with h5py.File(os.path.join(path,"vid_slomo_depth.h5"), 'r') as f:
     depths =  f['vids'][:]
